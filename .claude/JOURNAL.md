@@ -40,3 +40,22 @@ Rejected: leaving the prompt pointing at a folder that does not exist, because D
 Found during M2: a soft-case payment sent after the attack is a hard stop by `burst_sum_1h`, because the attack's held payments (AED 423,000) are still in its 1 hour window.
 The soft scenario only works before the attack, on a fresh seed after legit traffic.
 To rerun the demo, reseed first.
+
+## 2026-11-21 - M3 and M4 run in parallel worktrees
+Changed from the first plan (M3 first, then M4 and M5) to save time: M3 (Jev) and M4 (incident tooling) touch mostly different files.
+M5 (dashboard) waits for both, because it reads `jev_calls` and the verdict fields.
+Cost: a likely small merge conflict in `breaker/app.py`, `README.md` and `.env.example`.
+
+## 2026-11-21 - Investigator scripts must work from a bare clone
+Wrong assumption in SPEC section 10: `facts.sh` and `infra_check.sh` read the live databases, but Devin only has a git clone on a Linux machine.
+Decision: the scripts rebuild the incident state from the deterministic seed plus the committed traces when no database exists, and they are portable across macOS and Ubuntu.
+The verdict comes back by a human running `scripts/apply_verdict.sh` with the `verdict.json` from the PR.
+
+## 2026-11-21 - CHANGELOG.md is written only by a script
+`infra_check.sh` needs `CHANGELOG.md`, and the global rule forbids editing it by hand.
+Decision: `scripts/change_request.sh` is the only writer of `CHANGELOG.md` and `rules/rules.lock`.
+Every commit of this project is younger than 24 hours, so this script must run as the last commit before the demo, or Devin's step 2 will return `escalate_bank_security` and skip the client investigation.
+
+## 2026-11-21 - Keep the hand-written toy bank
+Roman asked about a ready-made bank from GitHub.
+Rejected: the bank is 132 lines, already verified, and must have our schema, the simulated clock header and the intentional gap; adapting a third-party project would cost more than it saves.
