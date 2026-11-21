@@ -125,3 +125,13 @@ Cost: reservation ids in the trace are one higher than in a legit, attack run, w
 `graphify extract . --code-only` plus `graphify cluster-only .` with `GRAPHIFY_BACKEND=none` works offline in seconds: 599 nodes, 1356 edges, relative paths only.
 The graph answers the Devin prompt's step 5: `forward()` in `breaker/app.py` is the single function that sends money to the bank, called by `payout()`, `_release()` and `release_hold()`.
 Community names stay "Community N" placeholders without an LLM backend; accepted.
+
+## 2026-11-21 - Product renamed to TrustGap for the presentation
+Roman renamed the product; applied to the dashboard, the preview page, the runner captions, README and AGENTS.md.
+`SPEC.md` and `docs/devin_prompt.md` keep their text; the repo, folders and Python packages keep their names.
+
+## 2026-11-21 - Devin rehearsal fired
+Everything Devin needs was pushed first: pinned baseline tests, `AGENTS.md`, the graphify graph, and the change log commit, and a fresh clone gave `infra check: clean`.
+The attack at 10:35 UTC fired the automation webhook and Devin answered HTTP 200.
+A watcher polls GitHub for the PR for up to 45 minutes; the stack on ports 8000 and 8001 stays up so the verdict can be applied.
+Constraint found: agent worktrees are created from the last pushed commit, not from local `main`, so push before spawning a worktree agent.
