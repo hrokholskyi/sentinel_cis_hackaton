@@ -215,3 +215,14 @@ Cause in Devin's own words: clone through its git proxy fails with HTTP 403 for 
 The same Devin organisation opens pull requests on `hrokholskyi/ghost_defender_cis_hackathon`, so the Devin GitHub app is installed but this repository is not in its allowed list.
 Wrong assumption replaced: starting the session through the API with the same service user does not fix access; the repository must be added to the GitHub app installation.
 Plan: once access is granted, start the rehearsal session through the v3 API with the same prompt and incident record, then build the API trigger into the breaker so the dashboard can link to the live session.
+
+## 2026-11-21 - Devin can clone after the repo was added to the GitHub app
+Roman added `sentinel_cis_hackaton` to the Devin GitHub app installation.
+A session started through the v3 API (`POST /sessions` with `prompt`, `title`, `tags`, `max_acu_limit`) at 12:00:42 UTC began investigating without the HTTP 403; only verified body fields were sent, `repos` was left out because its format is unverified and the `@owner/repo` line in the prompt is enough.
+The prompt was copied from the first message of the failed webhook session, so it is identical to what the automation sends.
+
+## 2026-11-21 - README becomes a product page, the reference moves to docs
+Roman asked for a README that also presents the product.
+Decision: the old README moves unchanged to `docs/REFERENCE.md`, and a new short `README.md` carries the pitch, the three layers, the measured results, real screenshots, a GIF and a two-minute quick start.
+The move is byte-identical apart from forced link fixes, because the stage-fix agent is editing README sections in parallel and its diff must be re-applied to the moved file.
+Rejected: waiting for the stage fixes before starting, because it would cost about 20 minutes of idle time.
