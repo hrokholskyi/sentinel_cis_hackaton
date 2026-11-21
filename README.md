@@ -33,6 +33,7 @@ scripts/infra_check.sh                                # was our own infrastructu
 scripts/replay.sh                                     # replay legit + latest incident on a fresh instance
 scripts/change_request.sh "<description>"             # regenerate rules/rules.lock, add a CHANGELOG.md entry
 .venv/bin/python scripts/jev_eval.py                  # live Jev check of 8 cases (needs TYPESAFE_API_KEY, uses ports 8300/8301)
+scripts/watch_pr.sh                                   # wait for the agent's pull request, save it, apply its verdict
 ```
 
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
@@ -163,6 +164,38 @@ The snapshot is built in `.state/` (gitignored): fresh seed, services in stub mo
 The seed is deterministic, so this reproduces the incident; one line on stderr says that a snapshot was built.
 `docs/devin_prompt.md` is the prompt for the Devin automation, copied unchanged from SPEC section 10.
 `rules/README.md` explains the rule format to an agent that adds a rule.
+
+## Getting Devin's verdict back
+
+Devin runs on its own machine and cannot reach the breaker, and it sends no callback.
+So a watcher on the demo laptop looks for its pull request and feeds the verdict to the breaker:
+
+```sh
+scripts/watch_pr.sh                      # PRs opened from now on, GITHUB_REPO or the origin remote
+scripts/watch_pr.sh --pr 3 --incident inc_0001 --interval 5
+scripts/watch_pr.sh --no-apply           # save the artifacts only
+```
+
+It polls the GitHub API (`GITHUB_API_URL`, default `https://api.github.com`) every `--interval` seconds (default 10) until `--timeout-min` (default 30).
+It takes the newest open pull request created at or after `--since` (default: the watcher start time) that has a valid `verdict.json`.
+`--pr N` picks one pull request and ignores `--since`; `--incident ID` ignores verdict files for other incidents.
+The token comes from `GITHUB_TOKEN`, else `gh auth token`; with neither, GitHub allows 60 requests per hour and the watcher warns once.
+On a 403 or 429 it sleeps until the rate limit resets, at most 60 seconds, and tries again.
+
+Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` with every `rules/*.sql` at the pull request head, `report.md` if there is a `reports/*.md` file, and `pr.json`.
+`.state/pr/latest.json` points to them for other scripts, paths relative to the repo root:
+
+```json
+{"number": 1, "url": "https://github.com/OWNER/REPO/pull/1", "head_sha": "...", "dir": ".state/pr/1",
+ "verdict_file": ".state/pr/1/verdict.json", "rules_dir": ".state/pr/1/rules", "applied": true,
+ "fetched_at": "2026-11-21T02:10:00Z"}
+```
+
+The verdict is sent to `BREAKER_URL` with `ADMIN_TOKEN`, like `scripts/apply_verdict.sh`.
+`pr_url` is always set to the real pull request URL, and fields the endpoint does not accept are dropped with a note.
+Everything from the pull request is untrusted: nothing is executed, only `rules/<name>.sql` with names matching `^[A-Za-z0-9_.-]+$` is saved, paths with `..` or a leading `/` are refused, and every download is capped at 200 KB.
+Exit codes: 0 done, 2 setup error, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
+`tests/test_watch_pr.py` runs the watcher against a fake GitHub API.
 
 ## Before the demo
 
@@ -312,3 +345,14 @@ After merging a pull request that changes a rule, run the same steps again.
   `rules/rules.lock` lists `sha256  file name` for `rules/*.sql` only.
 - `replay.sh` exits 2 on a usage error (unknown incident id), 1 when a criterion fails.
   It stops its services through a pid file and a shell `trap`, and Python stops them too.
+
+### Getting Devin's verdict back
+
+- The watcher uses the PR's `html_url` from GitHub as `pr_url`, whatever `verdict.json` says.
+- Verdict file lookup: among the changed files, the `verdict.json` nearest to the repo root; paths with `..`, a leading `/` or a backslash are refused.
+- A verdict file that is missing, not valid JSON, not an object or larger than 200 KB counts as "not there yet": the watcher keeps polling, because the agent may push more commits.
+- A rule file that is too large or has an unsafe name is skipped with a warning and the rest are saved; `.state/pr/<number>/` is rebuilt from scratch on each run.
+- `latest.json` is written once with `applied: false` after the artifacts are saved, and again with `applied: true` after the breaker accepted the verdict.
+- Any breaker failure (HTTP error or not reachable) exits 4.
+- `--timeout-min 0` means one poll, then exit 3 if nothing usable was found.
+- The test-only option `--repo-root` moves `.state/` away from the repo.
