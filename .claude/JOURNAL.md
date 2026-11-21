@@ -135,3 +135,10 @@ Everything Devin needs was pushed first: pinned baseline tests, `AGENTS.md`, the
 The attack at 10:35 UTC fired the automation webhook and Devin answered HTTP 200.
 A watcher polls GitHub for the PR for up to 45 minutes; the stack on ports 8000 and 8001 stays up so the verdict can be applied.
 Constraint found: agent worktrees are created from the last pushed commit, not from local `main`, so push before spawning a worktree agent.
+
+## 2026-11-21 - Milestone 6 and a review round, five Opus agents in parallel
+Roman asked for the optional milestone 6 and for Opus reviews.
+Split by file ownership to avoid conflicts: M6 owns the engine and new scripts; the UI agent owns `breaker/static/index.html`; the wording agent owns the captions in `scripts/demo.py` and the docs; the code and security review and the stage robustness review are read-only and report findings.
+Fixes from the two read-only reviews go to one fix agent after M6 is merged.
+Decision for M6: hold expiry is lazy and driven by the request clock only, never by wall-clock time or by `GET /state`, because the simulated clock jumps in the demo.
+Every agent is told never to load the real `.env`: a rehearsal run with the real webhook starts a paid Devin session.
