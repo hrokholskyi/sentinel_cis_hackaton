@@ -153,3 +153,21 @@ Found by reading: the PR watcher applies a verdict from any pull request, includ
 Wrong assumption replaced: "Jev may only release a soft stop" was true, but nothing enforced the state of the hold after the Jev call.
 Decision: one fix agent handles these after M6 is merged, because both change the payout path in `breaker/app.py`.
 Checked and sound: hard stops never reach Jev, the pause and counters are race-free, verdict release, admin auth, fail-closed paths, the six rules, dashboard escaping, no secrets in git.
+
+## 2026-11-21 - Review round results merged
+Milestone 6 (probe, lazy hold expiry, payroll released by a verdict), the watcher hardening (same-repo pull requests only), the wording pass and the dashboard polish are on main; 60 tests pass.
+The UI review found two caption timing problems in `scripts/demo.py` that are still open: in case 2 the screen shows "released" before the caption announces the hold, and in offline rehearsal case 4 says "Devin is working" while the card says offline.
+Graphify is now named in the narration, the dashboard and the README, worded as what Devin is given, because the runner cannot see inside Devin's session.
+
+## 2026-11-21 - Redesign rejected, current look stays
+A "ruled console" redesign was drawn on a design canvas (flat, hairlines, IBM Plex, one accent colour).
+Roman did not like it; the dark navy look with cards stays for the dashboard, the preview and the video.
+Not worth retrying in the same direction.
+
+## 2026-11-21 - 4K video of the preview
+Roman chose: the simulated preview page, current look, full run with the tour, silent with subtitles.
+It is rendered frame by frame with a controlled clock (not a screen recording) at 3840x2160 and 60 fps, plus a 1080p copy; output goes to the untracked `media/` folder and the renderer to `tools/video/`.
+
+## 2026-11-21 - Devin rehearsal: no pull request after 35 minutes
+The webhook returned HTTP 200 and Roman saw the session with the prompt and a reply from Devin, but no branch or PR appeared.
+Open: whether the session is waiting for an answer or an approval.
