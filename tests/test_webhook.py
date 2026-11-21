@@ -96,7 +96,7 @@ def test_webhook_body(make_stack, receiver):
         "tripped_at": "2026-11-21T02:03:04+04:00",
         "rule": "burst_count_5m",
         "level": "hard",
-        "api_key_id": "key_alnoor_1",
+        "api_key_id": "key_microsoft_1",
         "endpoint": "POST /payouts",
         "window": {"seconds": 300, "count": 9, "sum_aed": 62250, "new_beneficiaries": 3},
         "held_count": 3,

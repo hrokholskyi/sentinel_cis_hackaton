@@ -3,7 +3,11 @@
 A smart rate limiter in front of a toy bank payment API.
 It counts money and client behaviour, not requests, and puts suspicious payments on a reversible hold.
 `SPEC.md` is the build spec.
+
+The bank is shown as ADCB and the client as Microsoft for illustration only.
+The scenario is fictional.
 All data is synthetic.
+Neither company is involved.
 
 ## Setup
 

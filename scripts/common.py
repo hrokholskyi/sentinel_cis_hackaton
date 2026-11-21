@@ -14,12 +14,12 @@ HISTORY_END = DEMO_DATE - timedelta(days=2)
 HISTORY_DAYS = 90
 GULF_OFFSET = "+04:00"
 
-CLIENT_ID = "cli_alnoor"
-CLIENT_NAME = "Al Noor Logistics LLC"
-ACCOUNT_ID = "acc_alnoor_1"
+CLIENT_ID = "cli_microsoft"
+CLIENT_NAME = "Microsoft"
+ACCOUNT_ID = "acc_microsoft_1"
 OPENING_BALANCE_AED = 1_500_000
-API_KEY_ID = "key_alnoor_1"
-API_KEY_SECRET = "demo_sk_alnoor_0f6b2c9e4d7a1358"  # synthetic, not a real credential
+API_KEY_ID = "key_microsoft_1"
+API_KEY_SECRET = "demo_sk_microsoft_0f6b2c9e4d7a1358"  # synthetic, not a real credential
 
 BREAKER_URL = os.environ.get("BREAKER_URL", "http://127.0.0.1:8000")
 

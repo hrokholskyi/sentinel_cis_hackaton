@@ -53,7 +53,7 @@ Use `COALESCE` so that an empty set does not make `violated` NULL.
 
 | Parameter | Type | Value |
 |---|---|---|
-| `:api_key_id` | text | Id of the API key that sent the payout, for example `key_alnoor_1`. |
+| `:api_key_id` | text | Id of the API key that sent the payout, for example `key_microsoft_1`. |
 | `:account_id` | text | Account to debit. |
 | `:beneficiary_id` | text | Beneficiary to pay. |
 | `:amount_aed` | real | Amount of the payment in AED. |

@@ -175,7 +175,7 @@ def test_verdict_validation_and_other_verdicts(stack, tmp_path):
     assert any("bank security paged (simulated)" in t for t in texts)
     assert any("client contacted by second channel (simulated)" in t for t in texts)
 
-    httpx.post(stack.breaker_url + "/admin/keys/key_alnoor_1/resume", headers=ADMIN, timeout=10)
+    httpx.post(stack.breaker_url + "/admin/keys/key_microsoft_1/resume", headers=ADMIN, timeout=10)
     assert verdict(stack, "inc_0001", body("contact_client")).status_code == 409
 
 
