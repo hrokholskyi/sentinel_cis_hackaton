@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -45,6 +46,7 @@ class FakeGitHub:
         self.files_calls = 0
         self.hide_verdict_until = 0   # verdict.json is not in the file list before this call
         self.requests = []
+        self.script = []          # (status, headers) answered to the next requests, in order
         self.server = None
         self.url = ""
 
@@ -62,7 +64,7 @@ class FakeGitHub:
         self.contents["rules/07_new_rule.sql"] = NEW_RULE
         self.contents["reports/inc_0001.md"] = b"# Report\n"
 
-    def start(self):
+    def start(self, port=0):
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -86,6 +88,15 @@ class FakeGitHub:
                 q = parse_qs(u.query)
                 path = unquote(u.path)
                 outer.requests.append(path)
+                if outer.script:
+                    code, headers = outer.script.pop(0)
+                    self.send_response(code)
+                    for k, v in headers.items():
+                        self.send_header(k, v)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
                 base = f"/repos/{REPO}/"
                 if not path.startswith(base):
                     return self.send(404, {})
@@ -123,7 +134,7 @@ class FakeGitHub:
                                                for k in sorted(kids)])
                 return self.send(404, {})
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server = ThreadingHTTPServer(("127.0.0.1", port), H)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         return self.url
@@ -147,14 +158,17 @@ def root(tmp_path):
     return tmp_path / "root"
 
 
-def watch(gh, root, *args, breaker_url="http://127.0.0.1:9", timeout_min="0.1"):
+def watch_cmd(gh, root, *args, breaker_url="http://127.0.0.1:9", timeout_min="0.1", api=None):
     env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_REPO", "GH_TOKEN")}
-    env.update(GITHUB_API_URL=gh.url, GITHUB_TOKEN="test-token", BREAKER_URL=breaker_url,
+    env.update(GITHUB_API_URL=api or gh.url, GITHUB_TOKEN="test-token", BREAKER_URL=breaker_url,
                ADMIN_TOKEN="dev-admin-token")
-    return subprocess.run(
-        [replaylib.PYTHON, str(SCRIPT), "--repo", REPO, "--repo-root", str(root),
-         "--interval", "0.05", "--timeout-min", timeout_min, *args],
-        env=env, capture_output=True, text=True, timeout=120)
+    return ([replaylib.PYTHON, str(SCRIPT), "--repo", REPO, "--repo-root", str(root),
+             "--interval", "0.05", "--timeout-min", timeout_min, *args], env)
+
+
+def watch(gh, root, *args, **kw):
+    cmd, env = watch_cmd(gh, root, *args, **kw)
+    return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
 
 
 def fake_with_verdict(gh, doc=None, **kw):
@@ -422,3 +436,91 @@ def test_url_and_shape_rules():
     assert watch_pr.check_shape({**pr, "html_url": "http://x/y"}, "http://127.0.0.1:1") is None
     assert watch_pr.check_shape({**pr, "head": {"sha": "ABC1234"}}, "https://a")
     assert watch_pr.check_shape({**pr, "head": {"sha": "abc12"}}, "https://a")
+
+
+# --- transient errors, authentication errors, the rehearsal pointer -------------------
+
+def test_http_5xx_is_retried(gh, root):
+    fake_with_verdict(gh)
+    gh.script = [(503, {}), (502, {})]
+    r = watch(gh, root, "--pr", "7", "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("retrying in") == 2
+    assert (root / ".state" / "pr" / "latest.json").exists()
+
+
+def test_connection_refused_is_retried_until_github_is_back(tmp_path, root):
+    """GitHub is unreachable when the watcher starts, then comes up: the watcher carries on."""
+    port = replaylib.free_port()
+    fake = FakeGitHub()
+    cmd, env = watch_cmd(fake, root, "--pr", "7", "--no-apply", timeout_min="0.5",
+                         api=f"http://127.0.0.1:{port}")
+    with open(tmp_path / "watch.log", "w+") as log:
+        proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
+        try:
+            time.sleep(1.5)
+            fake_with_verdict(fake)
+            fake.start(port)
+            assert proc.wait(timeout=60) == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if fake.server:
+                fake.stop()
+        log.seek(0)
+        out = log.read()
+    assert "ConnectError" in out and "retrying in" in out
+    assert "done: saved PR #7" in out
+
+
+def test_unreachable_github_exits_5_at_the_deadline(root):
+    fake = FakeGitHub()
+    r = watch(fake, root, "--pr", "7", "--no-apply", timeout_min="0.05",
+              api=f"http://127.0.0.1:{replaylib.free_port()}")
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert r.stdout.count("retrying in") >= 2
+    assert "still failing at the deadline" in r.stderr
+
+
+def test_401_is_an_authentication_error(gh, root):
+    fake_with_verdict(gh)
+    gh.script = [(401, {})]
+    r = watch(gh, root, "--pr", "7", "--no-apply")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "HTTP 401" in r.stderr and "GITHUB_TOKEN" in r.stderr
+    assert "rate limit" not in r.stdout + r.stderr
+    assert "test-token" not in r.stdout + r.stderr
+
+
+def test_403_without_rate_limit_information_is_an_authentication_error(gh, root):
+    fake_with_verdict(gh)
+    gh.script = [(403, {"X-RateLimit-Remaining": "4999"})]
+    r = watch(gh, root, "--pr", "7", "--no-apply")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "HTTP 403" in r.stderr and "rate limit" not in r.stdout + r.stderr
+
+
+def test_403_rate_limit_is_waited_out(gh, root):
+    fake_with_verdict(gh)
+    gh.script = [(403, {"X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(int(time.time()) + 1)})]
+    r = watch(gh, root, "--pr", "7", "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "GitHub rate limit, sleeping" in r.stdout
+
+
+def test_save_as_rehearsal_writes_its_own_pointer(gh, root):
+    fake_with_verdict(gh)
+    (root / ".state" / "pr").mkdir(parents=True)
+    latest = root / ".state" / "pr" / "latest.json"
+    latest.write_text('{"number": 3}\n')
+    r = watch(gh, root, "--pr", "7", "--no-apply", "--save-as", "rehearsal")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert latest.read_text() == '{"number": 3}\n', "a rehearsal save leaves latest.json alone"
+    reh = json.loads((root / ".state" / "pr" / "rehearsal.json").read_text())
+    assert set(reh) == {"number", "url", "head_sha", "dir", "verdict_file", "rules_dir",
+                        "applied", "fetched_at"}
+    assert reh["url"] == PR_URL and reh["rules_dir"] == ".state/pr/7/rules"
+    assert reh["applied"] is False
+    assert len(list((root / ".state" / "pr" / "7" / "rules").glob("*.sql"))) == 7

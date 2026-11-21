@@ -8,8 +8,11 @@ breaker (the same call as scripts/apply_verdict.sh).
 Everything that comes from the pull request is untrusted data: nothing is executed, file
 paths are validated, downloads are capped, and the text is never used in a shell command.
 
-Exit codes: 0 done, 2 usage or setup error, 3 timeout, 4 the breaker refused the verdict or
-could not be reached, 5 GitHub API error.
+Network errors, timeouts and HTTP 5xx from GitHub are retried with a short backoff until the
+deadline. HTTP 401, and 403 without rate-limit information, are authentication errors.
+
+Exit codes: 0 done, 2 usage, setup or authentication error, 3 timeout, 4 the breaker refused
+the verdict or could not be reached, 5 GitHub API error.
 """
 
 import argparse
@@ -30,6 +33,9 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 MAX_FILE_BYTES = 200 * 1024
 MAX_LIST_BYTES = 4 * 1024 * 1024
+RETRY_FIRST_S = 0.5   # backoff for network errors and HTTP 5xx: 0.5, 1, 2, 4, 5, 5, ... seconds
+RETRY_MAX_S = 5.0
+POINTER_NAMES = ("latest", "rehearsal")
 RULE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 INCIDENT_ID = re.compile(r"^[A-Za-z0-9_]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
@@ -122,6 +128,16 @@ class GitHub:
     def close(self) -> None:
         self.client.close()
 
+    def _backoff(self, what: str, attempt: int) -> None:
+        """Sleep before retrying a transient error; WatchError(5) if the deadline would pass."""
+        wait = min(RETRY_MAX_S, RETRY_FIRST_S * 2 ** attempt)
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise WatchError(f"GitHub API still failing at the deadline: {what}", 5)
+        wait = min(wait, left)
+        warn(f"GitHub API: {what}, retrying in {wait:.1f}s")
+        time.sleep(wait)
+
     def _wait_rate_limit(self, resp: httpx.Response) -> None:
         wait = 60.0
         reset = resp.headers.get("x-ratelimit-reset")
@@ -145,26 +161,47 @@ class GitHub:
         Raises WatchError(code 6) when the body is larger than `cap`.
         """
         headers = {"Accept": "application/vnd.github.raw+json"} if raw else {}
-        for _ in range(20):
+        limited, failed = 0, 0
+        while True:
             try:
                 with self.client.stream("GET", path, params=params, headers=headers) as resp:
-                    if resp.status_code in (403, 429):
+                    code = resp.status_code
+                    if code == 401:
+                        raise WatchError(f"GitHub refused the credentials (HTTP 401 on {path}):"
+                                         " check GITHUB_TOKEN or run gh auth login", 2)
+                    if code == 429 or (code == 403 and is_rate_limited(resp)):
                         resp.read()
+                        limited += 1
+                        if limited > 20:
+                            raise WatchError("GitHub API: too many rate limit retries", 5)
                         self._wait_rate_limit(resp)
                         continue
-                    if resp.status_code == 404:
+                    if code == 403:
+                        raise WatchError(f"GitHub denied access (HTTP 403 on {path}): the token"
+                                         f" cannot read {self.repo}, check GITHUB_TOKEN", 2)
+                    if code == 404:
                         return None
-                    if resp.status_code != 200:
-                        raise WatchError(f"GitHub API {path}: HTTP {resp.status_code}", 5)
+                    if code >= 500:
+                        resp.read()
+                        self._backoff(f"HTTP {code} on {path}", failed)
+                        failed += 1
+                        continue
+                    if code != 200:
+                        raise WatchError(f"GitHub API {path}: HTTP {code}", 5)
                     body = b""
                     for chunk in resp.iter_bytes():
                         body += chunk
                         if len(body) > cap:
                             raise WatchError(f"{path}: larger than {cap} bytes", 6)
                     return body
+            except httpx.UnsupportedProtocol as e:
+                raise WatchError(f"GitHub API URL is not usable: {e}", 2)
+            except (httpx.TransportError, httpx.DecodingError) as e:
+                # connection refused, DNS, timeouts, a dropped connection: transient
+                self._backoff(f"{type(e).__name__} on {path}", failed)
+                failed += 1
             except httpx.HTTPError as e:
                 raise WatchError(f"GitHub API {path}: {type(e).__name__}", 5)
-        raise WatchError("GitHub API: too many rate limit retries", 5)
 
     def json(self, path: str, params: Optional[dict] = None):
         body = self.get(path, params)
@@ -202,6 +239,11 @@ class GitHub:
 
     def list_dir(self, path: str, sha: str):
         return self.json(f"/repos/{self.repo}/contents/{quote(path, safe='/')}", {"ref": sha})
+
+
+def is_rate_limited(resp: httpx.Response) -> bool:
+    """A 403 is a rate limit only when GitHub says so: Retry-After, or no requests left."""
+    return bool(resp.headers.get("retry-after")) or resp.headers.get("x-ratelimit-remaining") == "0"
 
 
 # --- validation of untrusted paths ----------------------------------------------
@@ -446,14 +488,16 @@ def rel(path: Path, root: Path) -> str:
         return str(path)
 
 
-def write_latest(state: Path, root: Path, pr_json: dict, applied: bool) -> None:
+def write_latest(state: Path, root: Path, pr_json: dict, applied: bool,
+                 name: str = "latest") -> None:
+    """Write the pointer file .state/pr/<name>.json (latest.json, or rehearsal.json)."""
     d = state / str(pr_json["number"])
     latest = {"number": pr_json["number"], "url": pr_json["url"], "head_sha": pr_json["head_sha"],
               "dir": rel(d, root), "verdict_file": rel(d / "verdict.json", root),
               "rules_dir": rel(d / "rules", root), "applied": applied, "fetched_at": iso(now_utc())}
-    tmp = state / "latest.json.tmp"
+    tmp = state / f"{name}.json.tmp"
     tmp.write_text(json.dumps(latest, indent=2) + "\n")
-    os.replace(tmp, state / "latest.json")
+    os.replace(tmp, state / f"{name}.json")
 
 
 # --- applying the verdict -----------------------------------------------------------
@@ -534,11 +578,13 @@ def run(args) -> int:
     finally:
         gh.close()
 
-    write_latest(state, root, pr_json, applied=False)
+    write_latest(state, root, pr_json, applied=False, name=args.save_as)
+    if args.save_as != "latest":
+        say(f"pointer written to {rel(state / (args.save_as + '.json'), root)}")
     if args.no_apply:
         return finish(f"saved PR #{pr_json['number']} (not applied, --no-apply)")
     summary = apply_verdict(data, pr_json["url"])
-    write_latest(state, root, pr_json, applied=True)
+    write_latest(state, root, pr_json, applied=True, name=args.save_as)
     say(f"breaker: {summary}")
     return finish(f"applied verdict of PR #{pr_json['number']} ({pr_json['url']}): {summary}")
 
@@ -565,6 +611,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--timeout-min", type=float, default=30, help="give up after this (exit 3)")
     p.add_argument("--no-apply", action="store_true", help="save artifacts only")
     p.add_argument("--quiet", action="store_true", help="print only the final line")
+    p.add_argument("--save-as", choices=POINTER_NAMES, default="latest",
+                   help="pointer file to write in .state/pr/: latest.json (default) or "
+                        "rehearsal.json, the fallback that scripts/demo.py uses on stage")
     p.add_argument("--repo-root", default=str(ROOT), help=argparse.SUPPRESS)
     args = p.parse_args(argv)
     QUIET = args.quiet
