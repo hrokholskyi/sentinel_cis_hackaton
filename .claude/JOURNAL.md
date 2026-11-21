@@ -178,3 +178,14 @@ Wrong assumption replaced: HTTP 200 from the automation webhook only means the s
 Fix is on Roman's side: give the Devin GitHub integration (or the automation's service user) read and write access to the repo, then fire the webhook again.
 What did work: the trigger, the prompt and the incident JSON arrived, and Devin read the incident correctly from the payload alone.
 The failed rehearsal's stack and watcher were stopped; main was refreshed (code graph, change request) so the next run starts from a clean infra check.
+
+## 2026-11-21 - 4K video rendered with a virtual clock
+`tools/video/render.js` renders `docs/demo_preview.html` frame by frame: 3840x2160, 60 fps, 12,228 frames, 203.8 s, 74 MB, plus a 1080p copy of 27 MB, both in the untracked `media/` folder.
+Method: a virtual clock injected before the page scripts replaces `performance.now`, `Date`, timers and `requestAnimationFrame`, and every entry of `document.getAnimations()` gets its `currentTime` from the same clock, so CSS transitions are captured.
+Rejected: `HeadlessExperimental.beginFrame` (not supported on macOS) and CDP virtual time (does not reliably drive CSS animations).
+Constraint found the hard way: 7 parallel 4K browsers together with test suites and a live rehearsal pushed the load average to 206 on 10 cores; run the render alone next time.
+Open content notes from the render: the subtitle fade in the preview does nothing, the replay table headers "held" and "result" sit too close, and the KEY PAUSED text covers the counters for about 1.5 s.
+
+## 2026-11-21 - Pitch deck drawn on a design canvas
+Nine slides in the product's own look, with real numbers only and placeholders for team, contact and the pause-to-PR time.
+The "0 of 42 after the new rule" number comes from the main agent's scratch rule, not from a Devin pull request yet.
