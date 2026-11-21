@@ -1,7 +1,8 @@
 """Layer 1: rule loader and evaluator, reservations (counters) and the key state machine.
 
 Rules are files in RULES_DIR, one SELECT each, returning one row (violated, detail).
-They run on the breaker connection, with bank.db attached read-only as schema `bank`.
+They run on the breaker connection, with bank.db attached read-only as schema `bank`, under
+an authorizer that allows reads only.
 """
 
 import re
@@ -11,6 +12,13 @@ from pathlib import Path
 from typing import Optional
 
 HEADER = re.compile(r"^--\s*(id|level|description|params):\s*(.*?)\s*$")
+# SQL tokens: comments, string literals, quoted identifiers, words, any other character.
+SQL_TOKEN = re.compile(r"""--[^\n]*|/\*.*?(?:\*/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`"""
+                       r"""|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_$]*|\S""", re.S)
+VERBS = ("SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES")
+# The only actions a rule may perform while it runs (sqlite3 authorizer).
+READ_ACTIONS = (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+                sqlite3.SQLITE_RECURSIVE)
 LEVELS = ("soft", "hard")
 COUNTED = ("pending", "executed", "held", "released")
 
@@ -33,6 +41,32 @@ class Result:
     error: bool = False  # the rule raised or returned a malformed row
 
 
+def is_single_select(sql: str) -> bool:
+    """True if sql is one SELECT or WITH ... SELECT statement (comments and literals ignored)."""
+    toks = [t for t in SQL_TOKEN.findall(sql) if not t.startswith(("--", "/*"))]
+    while toks and toks[-1] == ";":
+        toks.pop()
+    if not toks or ";" in toks:
+        return False
+    if toks[0].upper() == "SELECT":
+        return True
+    if toks[0].upper() != "WITH":
+        return False
+    depth = 0  # the main verb is the first one outside the parentheses of the CTEs
+    for t in toks[1:]:
+        if t == "(":
+            depth += 1
+        elif t == ")":
+            depth -= 1
+        elif depth == 0 and t.upper() in VERBS:
+            return t.upper() == "SELECT"
+    return False
+
+
+def _read_only(action, *_args) -> int:
+    return sqlite3.SQLITE_OK if action in READ_ACTIONS else sqlite3.SQLITE_DENY
+
+
 def load_rules(rules_dir: str) -> list[Rule]:
     """Load rules/*.sql in file-name order. A malformed header stops the breaker from starting."""
     rules = []
@@ -46,6 +80,9 @@ def load_rules(rules_dir: str) -> list[Rule]:
                 meta.setdefault(m.group(1), m.group(2))
         if not meta.get("id") or meta.get("level") not in LEVELS:
             raise ValueError(f"{path}: needs '-- id:' and '-- level: soft|hard' headers")
+        if not is_single_select(text):
+            raise ValueError(f"{path}: a rule must be a single read-only SELECT"
+                             f" (or WITH ... SELECT) statement")
         if meta["id"] in seen:
             raise ValueError(f"{path}: duplicate rule id {meta['id']}")
         seen.add(meta["id"])
@@ -56,8 +93,21 @@ def load_rules(rules_dir: str) -> list[Rule]:
 
 
 def evaluate(conn: sqlite3.Connection, rules: list[Rule], params: dict) -> list[Result]:
-    """Run every rule. A rule that errors or returns a malformed row counts as violated."""
+    """Run every rule. A rule that errors or returns a malformed row counts as violated.
+
+    Rules run under an authorizer that allows reads only: a statement that would write,
+    attach or change a pragma is denied, which is a rule error.
+    """
     results = []
+    conn.set_authorizer(_read_only)
+    try:
+        _evaluate(conn, rules, params, results)
+    finally:
+        conn.set_authorizer(None)
+    return results
+
+
+def _evaluate(conn, rules: list[Rule], params: dict, results: list) -> None:
     for rule in rules:
         try:
             rows = conn.execute(rule.sql, params).fetchall()
@@ -70,7 +120,6 @@ def evaluate(conn: sqlite3.Connection, rules: list[Rule], params: dict) -> list[
             results.append(Result(rule.id, rule.level, bool(violated), str(detail)))
         except Exception as e:  # fail closed
             results.append(Result(rule.id, rule.level, True, f"rule error: {e}", error=True))
-    return results
 
 
 def pick(violations: list[Result]) -> Optional[Result]:
