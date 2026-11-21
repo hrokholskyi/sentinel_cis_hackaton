@@ -104,3 +104,9 @@ The first call after about 70 s idle can take about 520 ms (reconnect); still in
 The M4 branch was cherry-picked, so commit hashes changed and its `CHANGELOG.md` entry would not match.
 `scripts/change_request.sh` runs once on main as the last commit before the demo instead.
 A stale `breaker.db` from an older schema makes `facts.sh` fail with "no such column"; reseed after pulling schema changes.
+
+## 2026-11-21 - Existing tests would break when Devin adds its rule
+Found while reviewing the merge: most tests assert the leak (6 executed, 36 held) with the live `rules/` folder, and `tests/test_replay.py` asserts that replay exits 1.
+As soon as Devin adds a rule that closes the gap, those tests fail, while its prompt forbids weakening or deleting tests, so it would get stuck or break its limits.
+Decision: tests about the historic incident run on a pinned baseline of the six original rule files; tests about the current rule set only check that all rules load and legit traffic passes.
+To do right after the dashboard branch is merged, because that branch adds tests and the `--rules-dir` replay option.
