@@ -37,23 +37,34 @@ One command does everything: seed, services, browser, guided demo.
 ```sh
 scripts/demo.sh                 # manual: press Enter for each beat
 scripts/demo.sh --auto          # advance on timers
-scripts/demo.sh --from 3        # start at case 3 (only after the earlier cases ran on these databases)
+scripts/demo.sh --from 3        # start at case 3 on a fresh seed (case 3 does not need cases 1 and 2)
+scripts/demo.sh --keep-data --from 4   # continue after a crash, on the same databases
 scripts/demo.sh --no-tour --no-open
 ```
 
 What `scripts/demo.sh` does, in order:
 
-1. Loads `.env` if present.
+1. Loads `.env` if present, only for the variables that the environment does not set already.
+   So `JEV_MODE=stub scripts/demo.sh` runs in stub mode even when `.env` sets `JEV_MODE=live`, and the same holds for the URLs.
 2. Picks `JEV_MODE=live` when `TYPESAFE_API_KEY` is set and `JEV_MODE` is not, else `stub`.
 3. Reseeds `BANK_DB` and `BREAKER_DB`.
+   With `--keep-data` it skips the seed and keeps both databases; it refuses if one of them does not exist.
 4. Starts the bank and the breaker on the ports of `BANK_URL` and `BREAKER_URL` (8001 and 8000 by default).
    It refuses to start if a port is busy.
+   The breaker writes incident traces to `.state/demo/incidents/`, so a demo never changes the committed `fixtures/incidents/`.
 5. Waits for both health checks.
-6. Opens the dashboard (`open` on macOS, `xdg-open` on Linux, skipped with `--no-open`).
+6. Opens the dashboard in the background (`open -g` on macOS, `xdg-open` on Linux, skipped with `--no-open`) and prints a reminder to keep the terminal focused, because Enter must reach the runner.
 7. Runs `scripts/demo.py` with the other arguments.
 
 On exit it stops exactly the two services it started, by pid.
 Service logs go to `.state/demo/`.
+
+After the last beat the runner leaves the page as it is and says that the demo is finished.
+The services keep running until `q` then Enter, or Ctrl-C.
+Only then does the runner clear the presenter state, and `demo.sh` stop the services.
+
+When the runner stops on an error or on Ctrl-C, it prints the command that continues at the current case on the same databases, for example `scripts/demo.sh --keep-data --from 4`.
+It adds `--no-open`, `--no-webhook` and `--no-watcher` when the run had them.
 
 ## Rehearse without external calls
 
@@ -64,7 +75,7 @@ JEV_MODE=stub scripts/demo.sh --no-webhook --no-watcher
 - `--no-webhook` (an option of `demo.sh`) unsets `DEVIN_WEBHOOK_URL` and `DEVIN_WEBHOOK_SECRET`, so no Devin session starts, even when `.env` sets them.
 - `--no-watcher` (an option of `demo.py`) never starts the PR watcher, so nothing polls GitHub.
 - `JEV_MODE=stub` keeps Jev offline.
-  `.env` is loaded after the environment, so this works only if `.env` does not set `JEV_MODE` itself.
+  A value in the environment wins over `.env`, so this works even if `.env` sets `JEV_MODE`.
 
 Use other ports when the default ones are busy, for example `BANK_URL=http://127.0.0.1:8501 BREAKER_URL=http://127.0.0.1:8500`.
 
@@ -76,11 +87,13 @@ Use other ports when the default ones are busy, for example `BANK_URL=http://127
 2. Case 1, legit traffic: 42 daytime payments with a 0.12 s delay, all executed.
 3. Case 2, soft stop: the 02:10 payment.
    Layer 1 holds it and Jev releases it.
-   If Jev does not answer in time, the payment stays on hold and the caption says so.
+   If Jev does not answer in time, or answers with an error, the payment stays on hold and the caption says which one.
+   A failed call that took the whole `JEV_TIMEOUT_S` counts as a timeout, a faster one (for example HTTP 401) as an error.
 4. Case 3, attack: the 02:00 attack with a 0.25 s delay.
-   Captions follow the real state: leak, first soft stop, API key paused, all held.
-5. Case 4, Devin: the webhook status, then "Devin is working" with a timer, until the incident has a verdict and a pull request.
-6. Case 5, replay: `scripts/replay.sh` with the repo rules (6 executed, FAIL), then with `--rules-dir` from the pull request (0 executed, PASS).
+   Captions follow the real state: leak, first soft stop, API key paused, every further payment held and the webhook status, then the totals.
+5. Case 4, Devin: the webhook status (sent, failed, or not configured), then, only when it was sent, "Devin is working" with a timer, until the incident has a verdict and a pull request.
+   The verdict caption says what the breaker did with it, including a release that the re-check changed to `contact_client`.
+6. Case 5, replay: `scripts/replay.sh` with the repo rules (6 executed, FAIL), then with `--rules-dir` from the pull request whose verdict the breaker holds (0 executed, PASS).
 
 Each case has an EXPLAIN beat (title card and captions) and a SHOW beat.
 Keys in the terminal:
@@ -88,17 +101,27 @@ Keys in the terminal:
 | Key | When | What it does |
 |---|---|---|
 | Enter | between beats | next beat |
-| `f` then Enter | case 4, while waiting | apply the verdict from the rehearsal run named in `.state/pr/latest.json`, with a caption that says so |
-| `s` then Enter | case 4, while waiting | skip the wait |
-| Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services |
+| `f` then Enter | case 4, while waiting | apply the verdict of the rehearsal run named in `.state/pr/rehearsal.json` (else `.state/pr/latest.json`), with a caption that says so |
+| `s` then Enter | case 4, while waiting | skip the wait; the caption follows the webhook status |
+| `q` then Enter | after the last beat | end the demo: clear the presenter state, stop the services |
+| Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services, print the restart command |
 | `C` | on the dashboard | subtitles on or off |
+
+Each prompt starts with the time since the demo started, as `[mm:ss]`.
+The runner discards keys pressed while a step runs, so an Enter pressed too early never skips the next pause.
 
 When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --incident <id> --timeout-min 30` if that script exists.
 Its log is `.state/demo/watch_pr.log`.
-Case 5 replays against `rules_dir` from `.state/pr/latest.json`.
-Without it the runner shows only the "before" table and says the fix is not available yet.
+When the watcher exits, the terminal shows its exit code and what it means, for example "code 2: setup or authentication error, for example a bad GitHub token".
 
-Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--before-rules DIR`, `--url`.
+The fallback sends the verdict with the header `X-Verdict-Source: rehearsal`.
+The breaker stores that source, so the incident card and Layer 3 show "from the rehearsal run" instead of minutes from today's pause, and the caption says that this is the pull request from the rehearsal run.
+
+Case 5 replays against the `rules_dir` of the pull request whose verdict the breaker holds: the one of `rehearsal.json` and `latest.json` whose `url` is the incident's `pr_url`.
+A rehearsal pull request is labelled "(rehearsal run)".
+Without a match the runner shows only the "before" table and says why.
+
+Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--rehearsal-state PATH` (default: `rehearsal.json` next to `--pr-state`), `--presenter-log PATH` (every presenter update as a JSON line, for tests), `--before-rules DIR`, `--url`.
 `--before-rules DIR` sets the rules folder of the "before" replay in case 5.
 The default is the repo `rules/` folder, which is right on stage; tests pass the baseline folder.
 
@@ -117,6 +140,15 @@ scripts/infra_check.sh        # must print "infra check: clean"
 The commit must touch only those two files.
 Never edit `CHANGELOG.md` or `rules/rules.lock` by hand.
 After merging a pull request that changes a rule, run the same steps again.
+
+After a successful rehearsal, keep its pull request as the stage fallback (replace `N` with its number):
+
+```sh
+scripts/watch_pr.sh --pr N --no-apply --save-as rehearsal
+```
+
+This writes `.state/pr/rehearsal.json`.
+A later live run writes only `latest.json`, so the rehearsal pointer stays.
 
 ## Commands
 
@@ -335,7 +367,8 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
 | `BANK_URL` | `http://127.0.0.1:8001` | breaker |
 | `BREAKER_URL` | `http://127.0.0.1:8000` | traffic scripts |
 | `RULES_DIR` | `rules` | breaker, loaded once at start |
-| `INCIDENTS_DIR` | `fixtures/incidents` | breaker, incident trace files |
+| `INCIDENTS_DIR` | `fixtures/incidents` | breaker, incident trace files (`scripts/demo.sh`: `.state/demo/incidents`) |
+| `TRACE_FILE_PUBLIC_DIR` | not set | breaker: folder named in the webhook's `trace_file` (`scripts/demo.sh`: `fixtures/incidents`) |
 | `DEMO_MODE` | `1` | bank, breaker: take "now" from the `X-Sim-Time` header |
 | `ADMIN_TOKEN` | `dev-admin-token` | breaker admin endpoints |
 | `SOFT_MIN_AMOUNT_AED` | `5000` | rules, bound as `:soft_min_amount_aed` |
@@ -351,7 +384,9 @@ When an incident opens, the breaker POSTs a `breaker.tripped` event (SPEC sectio
 No webhook is sent when `DEVIN_WEBHOOK_URL` is unset or empty.
 It is sent after the tripping transaction has committed, from a background thread, with a 3 second timeout.
 Success or failure is logged as an `events` row; a failure never changes the hold, the pause or the HTTP response.
-The webhook reports the Jev model from `JEV_MODEL` (default `jev-1.13.0`).
+The webhook reports the Jev model that the breaker uses: `JEV_MODEL` in `breaker/jev.py` (default `jev-1.14.0`).
+Its `trace_file` is the path of the trace relative to the repo, or `TRACE_FILE_PUBLIC_DIR/<id>.jsonl` when that variable is set.
+`scripts/demo.sh` writes the traces to `.state/demo/incidents/` and sets `TRACE_FILE_PUBLIC_DIR=fixtures/incidents`, because the external agent reads the committed trace in its own clone.
 
 `POST /incidents/{id}/verdict` (header `X-Admin-Token`) takes the SPEC body:
 
@@ -376,7 +411,10 @@ The webhook reports the Jev model from `JEV_MODEL` (default `jev-1.13.0`).
 | `escalate_bank_security` | Event "bank security paged (simulated)". API key stays paused, holds stay. |
 
 The `evidence` ids are stored but never trusted; the database decides.
-`GET /state` returns `pause_to_pr_min` for each incident: real minutes from the pause to the verdict, null until a verdict with a `pr_url` arrives.
+The optional header `X-Verdict-Source: rehearsal` (or `live`, the default) marks a verdict that comes from an earlier rehearsal run; any other value is a 422.
+`scripts/apply_verdict.sh` sends it when `VERDICT_SOURCE=rehearsal` is set.
+`GET /state` returns `pause_to_pr_min` for each incident: real minutes from the pause to the verdict, null until a verdict with a `pr_url` arrives, and null for a rehearsal verdict.
+It also returns `verdict_source` (`live` or `rehearsal`, null before a verdict).
 
 ## Investigator scripts
 
@@ -418,7 +456,10 @@ A pull request from a fork is skipped with one log line that names its number an
 `--authors a,b` (or `WATCH_PR_AUTHORS`) limits the accepted authors, case-insensitive; without it any author with a branch in the repository is accepted, and the "found PR" line names the author.
 With `--pr N` the same checks apply, and a refusal exits 2.
 The token comes from `GITHUB_TOKEN`, else `gh auth token`; with neither, GitHub allows 60 requests per hour and the watcher warns once.
-On a 403 or 429 it sleeps until the rate limit resets, at most 60 seconds, and tries again.
+On a 429, or a 403 with `Retry-After` or `X-RateLimit-Remaining: 0`, it sleeps until the rate limit resets, at most 60 seconds, and tries again.
+A 401, or a 403 without that rate-limit information, is an authentication error: it says to check `GITHUB_TOKEN` and exits 2.
+Connection errors, timeouts and HTTP 5xx are retried with a backoff of 0.5, 1, 2, 4 and then 5 seconds until the deadline, then it exits 5.
+`--save-as rehearsal` writes the pointer to `.state/pr/rehearsal.json` instead of `latest.json` (see "Before the demo").
 
 Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` with every `rules/*.sql` at the pull request head, `report.md` if there is a `reports/*.md` file, and `pr.json` (with the author login and `head_repo`).
 `.state/pr/latest.json` points to them for other scripts, with paths relative to the repo root:
@@ -433,7 +474,7 @@ The verdict is sent to `BREAKER_URL` with `ADMIN_TOKEN`, like `scripts/apply_ver
 `pr_url` is always set to the real pull request URL, and fields the endpoint does not accept are dropped with a note.
 Everything from the pull request is untrusted: nothing is executed, only `rules/<name>.sql` with names matching `^[A-Za-z0-9_.-]+$` is saved, paths with `..` or a leading `/` are refused, and every download is capped at 200 KB.
 Malformed API answers (a number that is not a positive integer, a bad head sha, a URL that is not https) are skipped with one log line.
-Exit codes: 0 done, 2 setup error or a refused `--pr`, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
+Exit codes: 0 done, 2 setup or authentication error or a refused `--pr`, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error (still failing at the deadline).
 `tests/test_watch_pr.py` runs the watcher against a fake GitHub API.
 
 ## Security hardening
@@ -626,10 +667,25 @@ Each one has a test in `tests/test_hardening_*.py` that reproduces the problem o
 - In case 3 the runner pauses the attack script (SIGSTOP, then SIGCONT) while a caption is read, so the narration never lags behind the screen; `--no-hold` turns this off.
   The breaker is not affected: the request times come from the plan.
 - The runner writes its traffic traces to `traces/demo_*.jsonl`, so a demo never rewrites `fixtures/legit.jsonl`.
-- The breaker still writes the incident trace to `INCIDENTS_DIR` (default `fixtures/incidents/`).
-  After a demo with the soft case, `fixtures/incidents/inc_0001.jsonl` differs from the committed one in its reservation ids; restore it with `git checkout fixtures/incidents`.
-- In `--auto` mode case 4 ends when no PR watcher is running, with the caption "No pull request yet".
-- The fallback copies the rehearsal verdict to a temp file with the current incident id (and the PR URL from `latest.json` if the verdict has none) before `apply_verdict.sh` sends it.
+- `scripts/demo.sh` points `INCIDENTS_DIR` at `.state/demo/incidents/` (a value equal to the default `fixtures/incidents` counts as not set, like the tokens), so a demo leaves `git status` clean.
+  Outside `demo.sh` the breaker still writes to `INCIDENTS_DIR` with its default `fixtures/incidents/`.
+  `TRACE_FILE_PUBLIC_DIR` keeps the webhook's `trace_file` at `fixtures/incidents/<id>.jsonl`; it is the committed trace of the same scenario, which is what the external agent can read.
+- A fresh seed by `demo.sh` also empties `.state/demo/incidents/`; `--keep-data` keeps it.
+- In `--auto` mode case 4 ends when no PR watcher is running, with a "No pull request" caption that follows the webhook status.
+- The fallback copies the rehearsal verdict to a temp file with the current incident id, the URL from the pointer file as `pr_url`, and only the fields the endpoint accepts, before `apply_verdict.sh` sends it with `VERDICT_SOURCE=rehearsal`.
+- The fallback caption comes after the breaker accepted the verdict, so a refused verdict never gets a caption.
+- `verdict_source` is stored per verdict on the incident; it is `live` without the header.
+  A database seeded before this column needs a fresh seed.
+- Jev timeout or error: the runner compares the logged latency of a call without an answer with `JEV_TIMEOUT_S` (95 percent or more is a timeout), because the breaker logs no error text for a failed Jev call.
+- At the end of case 3 the runner waits up to 4 seconds for the webhook result and then says that each further payment on the paused API key is held, with the webhook status.
+- Every child process of the runner (traffic scripts, replay, PR watcher, `apply_verdict.sh`) gets its stdin from `/dev/null`, so none of them can take over the presenter's terminal.
+  In a pseudo terminal without a controlling session one of them did, and the runner's next caption line failed with an I/O error.
+- After the last beat plain Enter does nothing; only `q` then Enter ends the demo, so a stray Enter cannot turn the projector to "OFFLINE".
+- The restart command after an error or Ctrl-C names the current case; `demo.sh` passes its own flags to the runner in `DEMO_SH_FLAGS` for it.
+  When `demo.py` runs on its own, the command is `scripts/demo.py --url ... --from N`.
+- `demo.sh` reads `.env` from `DEMO_ENV_FILE` when set (the tests pass an empty file) and keeps its logs and tokens in `DEMO_STATE_DIR` (default `.state/demo`).
+- Environment over `.env`: `scripts/_env.sh` reads the names assigned in `.env`, remembers the values the environment already has for them, sources the file, and puts the remembered values back with `export NAME=value`.
+  A variable that is set but empty counts as set.
 
 ### Milestone 6: probe, expiry, payroll
 
@@ -679,4 +735,7 @@ Each one has a test in `tests/test_hardening_*.py` that reproduces the problem o
 - Any breaker failure (HTTP error or not reachable) exits 4.
 - Without `--authors`, any account that can push a branch to the watched repository is trusted; the fork check is the main guard, the allowlist is optional.
 - `--timeout-min 0` means one poll, then exit 3 if nothing usable was found.
+- A 403 counts as a rate limit only with `Retry-After` or `X-RateLimit-Remaining: 0`, the two signs GitHub gives for its primary and secondary limits.
+- A GitHub API still failing at the deadline exits 5, not 3, so the runner can tell "GitHub broken" from "no pull request yet".
+- `--save-as` takes only `latest` or `rehearsal`; both files have the same shape.
 - The test-only option `--repo-root` moves `.state/` away from the repo.

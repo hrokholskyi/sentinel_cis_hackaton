@@ -6,8 +6,6 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import httpx
-
 from conftest import PYTHON, ROOT, baseline_rules_dir
 
 JEV_APPROVED = "The burst starts. Soft stop. Jev says this does not fit the history, " \
@@ -33,26 +31,38 @@ class LowScoreJev(BaseHTTPRequestHandler):
         pass
 
 
-def watch_presenter(url, seen, stop):
-    """Record every distinct presenter state the runner sets, as the page would see it."""
-    with httpx.Client(timeout=5) as c:
-        while not stop.is_set():
-            try:
-                p = c.get(url + "/state").json()["presenter"]
-            except (httpx.HTTPError, ValueError, KeyError):
-                p = None
-            if p and (not seen or seen[-1] != p):
-                seen.append(p)
-            time.sleep(0.05)
+FIELDS = ("caption", "spotlight", "card", "step", "step_done", "panel")
+
+
+def presenter_states(log_path):
+    """Every presenter state the runner set, in order, rebuilt from its --presenter-log.
+
+    The breaker accepted each update (the runner stops on any other answer) and merges it
+    like this: a given field replaces the old value, a missing field keeps it. Reading the
+    log instead of polling /state never misses a caption that was up only briefly.
+    """
+    cur, seen = dict.fromkeys(FIELDS), []
+    for line in log_path.read_text().splitlines():
+        upd = json.loads(line)
+        if upd.get("_clear"):
+            cur = dict.fromkeys(FIELDS)
+        else:
+            cur.update({k: v for k, v in upd.items() if k in FIELDS})
+        seen.append(dict(cur, step_done=cur["step_done"] or []))
+    return seen
 
 
 def run_runner(stack, tmp_path, *extra):
-    return subprocess.run(
+    log = tmp_path / "presenter.jsonl"
+    log.unlink(missing_ok=True)
+    r = subprocess.run(
         [PYTHON, str(ROOT / "scripts" / "demo.py"), "--auto", "--pace", "0.02",
          "--legit-delay", "0", "--attack-delay", "0.02", "--no-watcher",
          "--before-rules", str(baseline_rules_dir(tmp_path / "before_rules")),
-         "--pr-state", str(tmp_path / "missing.json"), "--url", stack.breaker_url, *extra],
+         "--pr-state", str(tmp_path / "missing.json"), "--url", stack.breaker_url,
+         "--presenter-log", str(log), *extra],
         cwd=ROOT, env=stack.env, capture_output=True, text=True, timeout=300)
+    return r, presenter_states(log)
 
 
 def test_case3_caption_waits_for_slow_jev(make_stack, tmp_path):
@@ -62,14 +72,7 @@ def test_case3_caption_waits_for_slow_jev(make_stack, tmp_path):
     try:
         stack = make_stack(env={"JEV_MODE": "live", "TYPESAFE_API_KEY": "dummy-key",
                                 "JEV_URL": f"http://127.0.0.1:{server.server_port}/v1/systemone"})
-        seen, stop = [], threading.Event()
-        t = threading.Thread(target=watch_presenter, args=(stack.breaker_url, seen, stop))
-        t.start()
-        try:
-            r = run_runner(stack, tmp_path, "--no-tour")
-        finally:
-            stop.set()
-            t.join()
+        r, seen = run_runner(stack, tmp_path, "--no-tour")
         assert r.returncode == 0, r.stdout + r.stderr
         captions = [p["caption"] for p in seen if p["caption"]]
         assert JEV_APPROVED in captions
@@ -82,14 +85,7 @@ def test_case3_caption_waits_for_slow_jev(make_stack, tmp_path):
 
 
 def test_demo_runner_auto_completes_all_cases(stack, tmp_path):
-    seen, stop = [], threading.Event()
-    t = threading.Thread(target=watch_presenter, args=(stack.breaker_url, seen, stop))
-    t.start()
-    try:
-        r = run_runner(stack, tmp_path)
-    finally:
-        stop.set()
-        t.join()
+    r, seen = run_runner(stack, tmp_path)
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
     for case in range(1, 6):
@@ -113,6 +109,12 @@ def test_demo_runner_auto_completes_all_cases(stack, tmp_path):
     assert "Offline mode: no webhook is configured, so Devin is not called." in joined
     assert "Before the new rule: 6 of 42 attack payments executed." in joined
     assert "The fix is not available yet" in joined
+    # The stretch while the rest of the attack streams in has its own caption.
+    assert "Each further payment on the paused API key is held. Offline mode: no webhook to Devin." in joined
+    # Offline: no caption claims that Devin is working.
+    assert "Devin is working" not in joined
+    assert "No pull request yet: offline mode." in joined
+    assert "The demo is finished. The services keep running" in out
     assert all("\u2014" not in c for c in captions)
     assert any(p["card"] == {"kicker": "Case 3", "title": "Attack"} for p in seen)
     assert any(p["panel"] and "FAIL" in p["panel"]["text"] for p in seen)
