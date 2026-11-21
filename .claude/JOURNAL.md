@@ -59,3 +59,11 @@ Every commit of this project is younger than 24 hours, so this script must run a
 ## 2026-11-21 - Keep the hand-written toy bank
 Roman asked about a ready-made bank from GitHub.
 Rejected: the bank is 132 lines, already verified, and must have our schema, the simulated clock header and the intentional gap; adapting a third-party project would cost more than it saves.
+
+## 2026-11-21 - Live Jev works, but does not release the demo soft case
+First real calls to `POST https://api.typesafe.ai/v1/systemone` with `jev-1.13.0`: endpoint, auth and response shape are confirmed.
+The legitimate soft case scores 0.78 and 0.85, below the 0.9 thresholds, so live mode keeps it on hold; the attack case scores 0.22 and 0.15, which is correct.
+Latency was 284 to 966 ms against a 1 second timeout, so it is tight.
+Decision: a tuning agent improves the facts and the question wording first (honest aggregates, no hidden verdict), adds a persistent HTTP client and a warm-up, and builds `scripts/jev_eval.py`.
+Rejected for now: lowering the thresholds just to pass the demo; it stays an option only with score distributions as evidence.
+The key lives in the gitignored `.env`.
