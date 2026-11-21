@@ -1,5 +1,9 @@
 {
   "incident_id": "inc_0001",
   "verdict": "escalate_bank_security",
-  "reason": "Our infrastructure is clean (every change in the last 24 hours has a change request, rules match rules.lock, no new API keys), so this is client-side activity on key_microsoft_1. At 02:00 the key paid three dormant beneficiaries (approved 213 days ago by j.doe, never paid before, no bases) six warm-up payments of AED 4,500 just under the soft minimum, then escalated to AED 11,750 each with the same 'urgent' purpose, which is a stolen-key or insider pattern, and AED 27,000 already left. Keep all 36 holds and the key paused, page bank security to recall the leaked payments and rotate the key, and confirm with the client by a second channel."
+  "reason": "Our infrastructure is clean (every change in the last 24 hours has a change request, rules match rules.lock, no new API keys), so this is client-side activity on key_microsoft_1. At 02:00 the key paid three dormant beneficiaries (approved 213 days ago by j.doe, never paid before, no bases) six warm-up payments of AED 4,500 just under the soft minimum, then escalated to AED 11,750 each with the same 'urgent' purpose, which is a stolen-key or insider pattern, and AED 27,000 already left. Keep all 36 holds and the key paused, page bank security to recall the leaked payments and rotate the key, and confirm with the client by a second channel.",
+  "evidence": {
+    "basis_ids": [],
+    "prior_payment_ids": []
+  }
 }
