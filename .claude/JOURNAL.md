@@ -142,3 +142,14 @@ Split by file ownership to avoid conflicts: M6 owns the engine and new scripts; 
 Fixes from the two read-only reviews go to one fix agent after M6 is merged.
 Decision for M6: hold expiry is lazy and driven by the request clock only, never by wall-clock time or by `GET /state`, because the simulated clock jumps in the demo.
 Every agent is told never to load the real `.env`: a rehearsal run with the real webhook starts a paid Devin session.
+
+## 2026-11-21 - Code and security review: the Jev release path breaks "a hold stays a hold"
+Reproduced by the review agent on real stacks:
+1. Jev release does not re-check the reservation after the model answers, so an admin release during the Jev call pays twice, an admin reject is ignored, and a soft hold that joined an incident on a just-paused key is still paid (`breaker/app.py`, `decide_soft` call site).
+2. One approved basis can release two payments through Jev, because no code claims the basis.
+3. Any client can set `X-Sim-Time` and step around every time window: 60 of 60 attack payments executed.
+5. A rule file can write to `breaker.db` through `UPDATE ... RETURNING`, because rules run on the writable connection.
+Found by reading: the PR watcher applies a verdict from any pull request, including forks (4); an unclear bank outcome can be paid twice (6); Jev can release with no approved basis (7); public default admin token and no Host check (8).
+Wrong assumption replaced: "Jev may only release a soft stop" was true, but nothing enforced the state of the hold after the Jev call.
+Decision: one fix agent handles these after M6 is merged, because both change the payout path in `breaker/app.py`.
+Checked and sound: hard stops never reach Jev, the pause and counters are race-free, verdict release, admin auth, fail-closed paths, the six rules, dashboard escaping, no secrets in git.
