@@ -110,3 +110,18 @@ Found while reviewing the merge: most tests assert the leak (6 executed, 36 held
 As soon as Devin adds a rule that closes the gap, those tests fail, while its prompt forbids weakening or deleting tests, so it would get stuck or break its limits.
 Decision: tests about the historic incident run on a pinned baseline of the six original rule files; tests about the current rule set only check that all rules load and legit traffic passes.
 To do right after the dashboard branch is merged, because that branch adds tests and the `--rules-dir` replay option.
+
+## 2026-11-21 - Dashboard merged, full demo run verified with live Jev
+`scripts/demo.sh --no-webhook --auto` ran end to end against the real TypeSafe API: soft case released at 0.98 and 0.99 in 268 ms, attack payments held at 0.02 and 0.01, 6 leaked, 36 held, key paused, 4002 ms.
+Added `--no-webhook` to `demo.sh`, because it loads `.env` and would otherwise start a paid Devin session on every rehearsal.
+Bug found: the runner caption said "Jev was not asked" while Jev had answered; the runner read `/state` before the Jev call was logged (the hold is committed first, the answer arrives about 250 ms later).
+
+## 2026-11-21 - Incident trace is recorded in demo order
+The committed `fixtures/incidents/inc_0001.jsonl` now comes from a legit, soft, attack run, so a stage run rewrites it byte for byte and the git tree stays clean.
+Rejected: pointing `INCIDENTS_DIR` elsewhere in `demo.sh`, because the webhook's `trace_file` must name a path that exists in Devin's clone.
+Cost: reservation ids in the trace are one higher than in a legit, attack run, which broke one test that compared ids; the test now ignores ids.
+
+## 2026-11-21 - Graphify trial
+`graphify extract . --code-only` plus `graphify cluster-only .` with `GRAPHIFY_BACKEND=none` works offline in seconds: 599 nodes, 1356 edges, relative paths only.
+The graph answers the Devin prompt's step 5: `forward()` in `breaker/app.py` is the single function that sends money to the bank, called by `payout()`, `_release()` and `release_hold()`.
+Community names stay "Community N" placeholders without an LLM backend; accepted.
