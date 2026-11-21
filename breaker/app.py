@@ -539,10 +539,19 @@ def _release(conn, inc, now: str, sim_time: str) -> tuple[list, list]:
     return released, kept
 
 
+VERDICT_SOURCES = {None: "live", "live": "live", "rehearsal": "rehearsal"}
+
+
 @app.post("/incidents/{incident_id}/verdict", dependencies=[Depends(require_admin)])
-def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Depends(sim_clock)):
+def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Depends(sim_clock),
+            x_verdict_source: Optional[str] = Header(default=None)):
+    """X-Verdict-Source: rehearsal marks a verdict replayed from an earlier rehearsal run, so
+    the dashboard does not show its pull request as opened minutes after this pause."""
     if body.incident_id != incident_id:
         raise HTTPException(422, "incident_id in the body does not match the path")
+    source = VERDICT_SOURCES.get(x_verdict_source.strip().lower() if x_verdict_source else None)
+    if source is None:
+        raise HTTPException(422, "X-Verdict-Source must be live or rehearsal")
     with VERDICT_LOCK:
         conn = connect()
         try:
@@ -589,7 +598,7 @@ def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Depends
             recorded = incidents.record_verdict(
                 conn, incident_id, requested=requested, verdict=final, reason=body.reason,
                 evidence=body.evidence.model_dump(), pr_url=body.pr_url, now=now,
-                status=status, hold_until=hold_until)
+                status=status, hold_until=hold_until, source=source)
             if not recorded:
                 notes.append(("verdict", f"verdict for {incident_id} not recorded: the incident"
                               f" was closed while it ran"))

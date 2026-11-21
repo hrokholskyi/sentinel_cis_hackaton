@@ -496,7 +496,7 @@ function renderIncident(){
     var pend='<span class="mu">pending</span>';
     var v=i.verdict?'<b>'+esc(vword(i.verdict))+'</b>'+(i.requested_verdict&&i.requested_verdict!==i.verdict?' <span class="mu">(asked: '+esc(vword(i.requested_verdict))+')</span>':''):pend;
     var pr=i.pr_url?'<a href="'+esc(i.pr_url)+'" target="_blank" rel="noopener" title="'+esc(i.pr_url)+'"><b>'+esc(prShort(i.pr_url))+'</b></a>'+(prRepo(i.pr_url)&&prNum(i.pr_url)?' <span class="mu">'+esc(prRepo(i.pr_url))+'</span>':''):pend;
-    var mins=i.pause_to_pr_min!=null?fmt(i.pause_to_pr_min)+' min':pend;
+    var mins=i.verdict_source==='rehearsal'&&i.pr_url?'from the rehearsal run':i.pause_to_pr_min!=null?fmt(i.pause_to_pr_min)+' min':pend;
     $('incB').innerHTML=kv('Rule',esc(i.rule_id))+kv('Paused at',esc(i.tripped_at))+kv('On hold',esc(plural(i.held_count,'payment'))+', '+esc(aed(i.held_aed))+(i.expired_count>0?' <span class="mu">('+esc(fmt(i.expired_count))+' expired)</span>':''))+kv('Verdict',v)+kv('PR',pr)+kv('Pause to PR',mins);
   });
 }
@@ -568,7 +568,7 @@ function renderLayers(){
     $('L2det').innerHTML='<div title="'+esc(pur)+'">'+esc(pur)+'</div><div class="pur" title="'+esc(purpose)+'">'+esc(purpose||'\u00a0')+'</div>'+score('fits_history',j2.fits_history,th)+score('purpose_matches_basis',j2.purpose_matches_basis,tb);
   })&&l2.last&&!first)touch(2);
   var inc=S.incident,wh=l3.webhook||{};
-  var s3=JSON.stringify([inc&&inc.id,inc&&inc.verdict,inc&&inc.pr_url,inc&&inc.pause_to_pr_min,wh.status]);
+  var s3=JSON.stringify([inc&&inc.id,inc&&inc.verdict,inc&&inc.pr_url,inc&&inc.pause_to_pr_min,inc&&inc.verdict_source,wh.status]);
   if(once('l3',s3,function(){
     var dec,tone,items=[];
     if(!inc){dec='idle';tone='mu';items.push('<li class="na"><i></i><span>Waits for an incident from the breaker</span></li>');}
@@ -585,7 +585,7 @@ function renderLayers(){
       else items.push(li('cur spin','sending webhook to Devin'));
       items.push(inc.verdict?li('on','verdict: '+vword(inc.verdict)+(inc.requested_verdict&&inc.requested_verdict!==inc.verdict?' (asked: '+vword(inc.requested_verdict)+')':'')):li(inc.verdict||wh.status!=='sent'?'':'cur spin','verdict from Devin'));
       items.push(inc.pr_url?li('on','PR '+prShort(inc.pr_url)+' with a new rule'):li('','PR with a new rule'));
-      items.push(inc.pause_to_pr_min!=null?li('on',fmt(inc.pause_to_pr_min)+' min from pause to PR'):li('','minutes from pause to PR'));
+      items.push(inc.verdict_source==='rehearsal'&&inc.pr_url?li('on','from the rehearsal run'):inc.pause_to_pr_min!=null?li('on',fmt(inc.pause_to_pr_min)+' min from pause to PR'):li('','minutes from pause to PR'));
     }
     $('L3dec').innerHTML='<span class="d tone-'+tone+'">'+esc(dec)+'</span>';
     $('L3chk').innerHTML=items.join('');

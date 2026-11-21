@@ -52,7 +52,9 @@ CREATE TABLE incidents (
     requested_verdict     TEXT,
     reason                TEXT,
     evidence_json         TEXT,
-    hold_until            TEXT
+    hold_until            TEXT,
+    -- Where the last verdict came from: 'live', or 'rehearsal' (header X-Verdict-Source).
+    verdict_source        TEXT
 );
 
 CREATE TABLE jev_calls (

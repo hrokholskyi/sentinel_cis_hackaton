@@ -111,7 +111,7 @@ def test_webhook_body(make_stack, receiver):
         "window": {"seconds": 300, "count": 9, "sum_aed": 62250, "new_beneficiaries": 3},
         "held_count": 3,
         "leaked_count": 6,
-        "jev": {"model": "jev-1.13.0", "asked": asked, "released": released},
+        "jev": {"model": "jev-1.14.0", "asked": asked, "released": released},  # breaker/jev.py JEV_MODEL
         "trace_file": str(stack.workdir / "incidents" / "inc_0001.jsonl"),
     }
     assert wait_for(lambda: events(stack, "webhook for inc_0001 sent"))

@@ -185,6 +185,7 @@ def incident_card(conn, inc: Optional[dict]) -> Optional[dict]:
             "violation_to_pause_ms": inc["violation_to_pause_ms"], "status": inc["status"],
             "verdict": inc["verdict"], "requested_verdict": inc["requested_verdict"],
             "verdict_at": inc["verdict_at"], "pr_url": inc["pr_url"],
+            "verdict_source": inc.get("verdict_source"),
             "pause_to_pr_min": incidents.pause_to_pr_min(inc),
             "held_count": held["n"], "held_aed": _num(held["s"])}
 

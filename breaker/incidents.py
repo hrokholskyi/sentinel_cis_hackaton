@@ -16,6 +16,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from breaker import jev as jev_module
+
 TS = "%Y-%m-%d %H:%M:%S"
 
 
@@ -136,6 +138,19 @@ def repo_path(path: str) -> str:
     return path
 
 
+def public_trace_file(path: str) -> str:
+    """The trace path the webhook reports.
+
+    With TRACE_FILE_PUBLIC_DIR set (scripts/demo.sh sets fixtures/incidents) it is that folder
+    plus the file name: the external agent reads the committed trace in its own clone, while
+    the breaker writes its copy elsewhere. Otherwise repo_path() of the real file.
+    """
+    public = os.environ.get("TRACE_FILE_PUBLIC_DIR", "").strip().rstrip("/")
+    if public:
+        return f"{public}/{os.path.basename(path)}"
+    return repo_path(path)
+
+
 def webhook_body(conn, incident_id: str, window_s: int) -> dict:
     """The breaker.tripped event. All counts use the request clock, up to tripped_at."""
     inc = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
@@ -185,9 +200,9 @@ def webhook_body(conn, incident_id: str, window_s: int) -> dict:
                    "new_beneficiaries": new_bens},
         "held_count": held_n,
         "leaked_count": leaked_n,
-        "jev": {"model": os.environ.get("JEV_MODEL", "jev-1.13.0"), "asked": jev["asked"],
+        "jev": {"model": jev_module.JEV_MODEL, "asked": jev["asked"],
                 "released": jev["released"]},
-        "trace_file": repo_path(inc["trace_file"]),
+        "trace_file": public_trace_file(inc["trace_file"]),
         "sample_requests": [trace_line(r) for r in rows],
     }
 
@@ -297,21 +312,28 @@ def request_clock(conn, inc) -> str:
 
 def record_verdict(conn, incident_id: str, *, requested: str, verdict: str, reason: str,
                    evidence: dict, pr_url: Optional[str], now: str, status: str,
-                   hold_until: Optional[str] = None) -> bool:
+                   hold_until: Optional[str] = None, source: str = "live") -> bool:
     """Record a verdict on an incident that is still open. False if it no longer is (for
-    example an admin resume closed it while a release ran): then nothing changes."""
+    example an admin resume closed it while a release ran): then nothing changes.
+
+    `source` is 'live' or 'rehearsal' (a verdict replayed from an earlier rehearsal run)."""
     cur = conn.execute(
         "UPDATE incidents SET verdict = ?, requested_verdict = ?, reason = ?, evidence_json = ?,"
         " pr_url = COALESCE(?, pr_url), verdict_at = ?, verdict_wall_at = ?, status = ?,"
-        " hold_until = COALESCE(?, hold_until) WHERE id = ? AND status = 'open'",
+        " hold_until = COALESCE(?, hold_until), verdict_source = ? WHERE id = ? AND status = 'open'",
         (verdict, requested, reason, json.dumps(evidence, sort_keys=True), pr_url, now,
-         wall_now(), status, hold_until, incident_id),
+         wall_now(), status, hold_until, source, incident_id),
     )
     return cur.rowcount > 0
 
 
 def pause_to_pr_min(inc: dict) -> Optional[float]:
-    """Real minutes from the pause to the verdict that carries a PR link, one decimal."""
+    """Real minutes from the pause to the verdict that carries a PR link, one decimal.
+
+    None for a rehearsal verdict: its pull request was opened in an earlier run.
+    """
+    if inc.get("verdict_source") == "rehearsal":
+        return None
     if not (inc.get("pr_url") and inc.get("tripped_wall_at") and inc.get("verdict_wall_at")):
         return None
     gap = (datetime.fromisoformat(inc["verdict_wall_at"])
