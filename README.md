@@ -40,6 +40,7 @@ scripts/replay.sh --rules-dir <dir>                   # same replay with the rul
 open http://127.0.0.1:8000/                           # live dashboard, served by the breaker
 .venv/bin/python scripts/demo.py                      # guided demo against running services (presenter mode)
 scripts/demo.sh                                       # the one command for the stage: seed, services, browser, demo
+GRAPHIFY_BACKEND=none graphify extract . --code-only && GRAPHIFY_BACKEND=none graphify cluster-only .   # refresh graphify-out/ (uv tool install "graphifyy[sql]==0.9.114")
 ```
 
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
