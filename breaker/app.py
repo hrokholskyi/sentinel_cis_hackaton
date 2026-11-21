@@ -15,14 +15,14 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from breaker import engine, incidents, jev
+from breaker import dashboard, engine, incidents, jev
 
 GULF = timezone(timedelta(hours=4))  # Asia/Dubai, no DST
 
@@ -446,7 +446,56 @@ def state():
             i["pause_to_pr_min"] = incidents.pause_to_pr_min(i)
         open_inc = next((i for i in reversed(incs) if i["status"] == "open"), None)
         events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 10")]
-        return {"keys": keys, "reservations": counts, "reservations_aed": amounts,
-                "open_incident": open_inc, "incidents": incs, "events": events}
+        out = {"keys": keys, "reservations": counts, "reservations_aed": amounts,
+               "open_incident": open_inc, "incidents": incs, "events": events}
+        out.update(dashboard.build(conn, incs=incs, keys=keys, rules_loaded=len(RULES)))
+        return out
     finally:
         conn.close()
+
+
+# --- dashboard and presenter mode -------------------------------------------
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+
+class Card(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kicker: str = Field(default="", max_length=80)
+    title: str = Field(min_length=1, max_length=80)
+
+
+class Panel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(default="", max_length=120)
+    text: str = Field(max_length=8000)
+
+
+class Presenter(BaseModel):
+    """All fields optional: a missing field keeps its value, null clears it."""
+    model_config = ConfigDict(extra="forbid")
+    caption: Optional[str] = Field(default=None, max_length=400)
+    spotlight: Optional[Literal[dashboard.SPOTLIGHTS]] = None
+    card: Optional[Card] = None
+    step: Optional[int] = Field(default=None, ge=0, le=5)
+    step_done: Optional[list[Annotated[int, Field(ge=0, le=5)]]] = Field(default=None,
+                                                                         max_length=6)
+    panel: Optional[Panel] = None
+
+
+@app.post("/admin/presenter", dependencies=[Depends(require_admin)])
+def set_presenter(body: Presenter):
+    return dashboard.presenter_update({f: (v.model_dump() if isinstance(v, BaseModel) else v)
+                                       for f in body.model_fields_set
+                                       for v in [getattr(body, f)]})
+
+
+@app.delete("/admin/presenter", dependencies=[Depends(require_admin)])
+def clear_presenter():
+    return dashboard.presenter_clear()

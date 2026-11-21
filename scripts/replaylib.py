@@ -254,14 +254,21 @@ def _exit_on_term(*_):
 
 
 def main(argv: list[str]) -> int:
-    """replay.sh [incident_id]: print the table, exit 0 only if both criteria pass."""
+    """replay.sh [incident_id] [--rules-dir DIR]: print the table, exit 0 only if both pass."""
     signal.signal(signal.SIGTERM, _exit_on_term)
     import argparse
     ap = argparse.ArgumentParser(prog="scripts/replay.sh", description=main.__doc__)
     ap.add_argument("incident_id", nargs="?", help="default: latest in fixtures/incidents/")
     ap.add_argument("--workdir", help="temp dir for databases and logs (default: a new one)")
     ap.add_argument("--pidfile", help="append service pids here (used by replay.sh)")
+    ap.add_argument("--rules-dir", help="load rules/*.sql from this folder instead of rules/")
     args = ap.parse_args(argv)
+    rules_dir = None
+    if args.rules_dir:
+        rules_dir = Path(args.rules_dir).resolve()
+        if not any(rules_dir.glob("*.sql")):
+            print(f"no rule files in {args.rules_dir}", file=sys.stderr)
+            return 2
     if args.incident_id:
         if not all(ch.isalnum() or ch == "_" for ch in args.incident_id):
             print(f"invalid incident id: {args.incident_id}", file=sys.stderr)
@@ -275,12 +282,13 @@ def main(argv: list[str]) -> int:
     own = args.workdir is None
     workdir = Path(args.workdir or tempfile.mkdtemp(prefix="replay."))
     try:
-        attack, legit = run(trace, workdir, pidfile=args.pidfile)
+        attack, legit = run(trace, workdir, rules_dir=rules_dir, pidfile=args.pidfile)
     finally:
         if own:
             shutil.rmtree(workdir, ignore_errors=True)
+    rules_note = "" if rules_dir is None else f", rules from {args.rules_dir}"
     print(f"replay of {trace.relative_to(ROOT)} after {LEGIT_TRACE.relative_to(ROOT)}"
-          f" (fresh seed, JEV_MODE=stub, no webhook)")
+          f" (fresh seed, JEV_MODE=stub, no webhook{rules_note})")
     print(table(attack, legit))
     return 0 if attack_passes(attack) and legit_passes(legit) else 1
 

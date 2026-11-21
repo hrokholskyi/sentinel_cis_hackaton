@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Replay fixtures/legit.jsonl and then an incident trace against a fresh bank and breaker.
-# Usage: scripts/replay.sh [incident_id]   (default: the latest file in fixtures/incidents/)
+# Usage: scripts/replay.sh [incident_id] [--rules-dir DIR]   (default: latest incident, rules/)
 # Prints the result table. Exit 0 only if attack executed = 0 and legit executed = 100%.
 # Offline, no secrets: fresh databases in a temp dir, JEV_MODE=stub, no webhook.
 set -u

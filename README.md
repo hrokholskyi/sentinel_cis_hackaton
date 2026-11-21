@@ -34,6 +34,10 @@ scripts/replay.sh                                     # replay legit + latest in
 scripts/change_request.sh "<description>"             # regenerate rules/rules.lock, add a CHANGELOG.md entry
 .venv/bin/python scripts/jev_eval.py                  # live Jev check of 8 cases (needs TYPESAFE_API_KEY, uses ports 8300/8301)
 scripts/watch_pr.sh                                   # wait for the agent's pull request, save it, apply its verdict
+scripts/replay.sh --rules-dir <dir>                   # same replay with the rules of another folder (a PR checkout)
+open http://127.0.0.1:8000/                           # live dashboard, served by the breaker
+.venv/bin/python scripts/demo.py                      # guided demo against running services (presenter mode)
+scripts/demo.sh                                       # the one command for the stage: seed, services, browser, demo
 ```
 
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
@@ -50,6 +54,9 @@ Breaker endpoints besides `POST /payouts`:
 | `POST /admin/keys/{id}/resume` | Key back to `normal`, closes its open incident |
 | `POST /admin/holds/{id}/release` | Sends a held payment to the bank (marked `released`, then `executed`) |
 | `POST /admin/holds/{id}/reject` | Marks a held payment `rejected`; it is never sent |
+| `GET /` | The live dashboard (`breaker/static/index.html`) |
+| `POST /admin/presenter` | Sets presenter fields (subtitle, spotlight, title card, stepper, panel); kept in memory |
+| `DELETE /admin/presenter` | Clears the presenter state; the page becomes a plain live dashboard |
 
 Admin endpoints need the header `X-Admin-Token: $ADMIN_TOKEN`.
 
@@ -96,6 +103,79 @@ Then it asks Jev `--n` times per case (default 5) and prints the scores (min, me
 A release case passes when at least `n - n // 20` calls release it (19 of 20); a hold case passes only when every call holds.
 `--model` compares models, `--cases R1,H5` picks cases, `--dump file.json` writes the facts and makes no API call.
 
+## Dashboard
+
+`GET /` on the breaker serves one static file, `breaker/static/index.html`: vanilla JS, no build step, no CDN, no web fonts, works offline.
+It polls `GET /state` every 500 ms and only renders; every number is computed by the breaker in `breaker/dashboard.py`.
+It is laid out for a stage screen and holds at 1920x1080 and 1440x900 with no page scrollbars.
+
+What it shows, all from the databases:
+
+- Key state badge (NORMAL, PAUSED, PROBE) for the client's API key, with the client name from `bank.clients`.
+  The flip to PAUSED flashes the screen and shows "KEY PAUSED" for a moment.
+- Scenario clock: the request time of the latest reservation.
+- Counters: stopped, leaked, legitimate payments held, released by Jev with median latency, first violation to pause.
+- The three layers, each with its latest real decision: the last rule result, the last Jev call (both scores, thresholds, latency, mode; "no answer, hold kept" when Jev did not answer), and the incident with webhook status, verdict and pull request.
+- Payment stream (latest 60 reservations, newest on top), hold queue (last 15 held), incident card, last 10 events.
+
+`GET /state` keeps every earlier field and adds `bank_name`, `client`, `key`, `clock`, `jev_mode`, `counters`, `stream`, `hold_queue`, `incident`, `layers` and `presenter`.
+Definitions:
+
+| Counter | Definition |
+|---|---|
+| Stopped | Reservations with status `held`: count and AED sum |
+| Leaked | For each incident, the key's `executed` reservations created in the hour up to `tripped_at`, except those sent later by a verdict or an admin |
+| Legitimate payments held | Held reservations that would pass the release re-check of a verdict (`incidents.recheck`) |
+| Released by Jev | `jev_calls` rows with `released = 1`; median latency over the calls that got a valid answer |
+| First violation to pause | `violation_to_pause_ms` of the open incident, else the latest one |
+
+Presenter mode: `POST /admin/presenter` (header `X-Admin-Token`) takes any of `caption`, `spotlight`, `card`, `step`, `step_done`, `panel`.
+A missing field keeps its value and `null` clears it; `DELETE /admin/presenter` clears everything.
+`spotlight` is one of `all`, `layers`, `layer1`, `layer2`, `layer3`, `key`, `counters`, `stream`, `queue`, `incident`, `events`.
+`card` is `{"kicker": "Case 2", "title": "Soft stop"}`, `step` is 0 (tour) to 5, `step_done` a list of steps, `panel` is `{"title", "text"}` shown in monospace over the stream and hold queue.
+The state lives in the breaker process, so a restart clears it.
+With no presenter state the page is a plain live dashboard: no stepper, no subtitles, no dimming.
+On the page, the key `C` shows or hides the subtitles.
+
+## Running the demo
+
+```sh
+scripts/demo.sh                 # manual: press Enter for each beat
+scripts/demo.sh --auto          # advance on timers
+scripts/demo.sh --from 3        # start at case 3 (only after the earlier cases ran on these databases)
+scripts/demo.sh --no-tour --no-open
+```
+
+`scripts/demo.sh` loads `.env` if present, picks `JEV_MODE=live` when `TYPESAFE_API_KEY` is set and `JEV_MODE` is not (else `stub`), reseeds `BANK_DB` and `BREAKER_DB`, and starts the bank and the breaker on the ports of `BANK_URL` and `BREAKER_URL` (8001 and 8000 by default).
+It refuses to start if a port is busy, waits for both health checks, opens the dashboard (`open` on macOS, `xdg-open` on Linux, skipped with `--no-open`) and runs `scripts/demo.py` with the other arguments.
+On exit it stops exactly the two services it started, by pid.
+Service logs go to `.state/demo/`.
+
+`scripts/demo.py` drives the page through the presenter endpoints and runs the traffic scripts as subprocesses.
+Demo order:
+
+1. Tour: 7 stops with a spotlight on each part of the page.
+2. Case 1, legit traffic: 42 daytime payments with a 0.12 s delay, all executed.
+3. Case 2, soft stop: the 02:10 payment; Layer 1 holds it, Jev releases it (or, with no answer in time, it stays on hold and the caption says so).
+4. Case 3, attack: the 02:00 attack with a 0.25 s delay; captions follow the real state (leak, first soft stop, key paused, all held).
+5. Case 4, Devin: the webhook status, then "Devin is working" with a timer until the incident has a verdict and a pull request.
+6. Case 5, replay: `scripts/replay.sh` with the repo rules (6 executed, FAIL), then with `--rules-dir` from the pull request (0 executed, PASS).
+
+Each case has an EXPLAIN beat (title card and captions) and a SHOW beat.
+Keys in the terminal:
+
+| Key | When | What it does |
+|---|---|---|
+| Enter | between beats | next beat |
+| `f` then Enter | case 4, while waiting | apply the verdict from the rehearsal run named in `.state/pr/latest.json`, with a caption that says so |
+| `s` then Enter | case 4, while waiting | skip the wait |
+| Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services |
+| `C` | on the dashboard | subtitles on or off |
+
+When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --timeout-min 30` if that script exists; its log is `.state/demo/watch_pr.log`.
+Case 5 replays against `rules_dir` from `.state/pr/latest.json`; without it the runner shows only the "before" table and says the fix is not available yet.
+Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--url`.
+
 ## Environment variables
 
 See `.env.example` for all variables and their defaults.
@@ -114,6 +194,7 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
 | `SOFT_MIN_AMOUNT_AED` | `5000` | rules, bound as `:soft_min_amount_aed` |
 | `HOLD_TTL_MIN` | `30` | not used before milestone 6 |
 | `DEMO_DATE` | `2026-11-21` | seed, traffic scripts |
+| `BANK_NAME` | `ADCB` | dashboard header and demo captions (text only) |
 
 ## Incidents and verdicts
 
@@ -344,6 +425,22 @@ After merging a pull request that changes a rule, run the same steps again.
   Untracked files in monitored paths count as uncommitted changes.
   `rules/rules.lock` lists `sha256  file name` for `rules/*.sql` only.
 - `replay.sh` exits 2 on a usage error (unknown incident id), 1 when a criterion fails.
+
+### Dashboard and demo runner
+
+- The page polls every 500 ms (SPEC section 11 says every second); the brief for milestone 5 asked for 500 ms so live traffic animates.
+- The stream is ordered by arrival (rowid), not by request time, because the demo clock jumps back and forth; a divider row marks each jump of the scenario clock.
+- The scenario clock is the request time of the latest reservation, not the maximum request time.
+- Leaked excludes payments released later by a verdict or an admin, so a `release` verdict never counts as a leak.
+- "Got an answer" for the median Jev latency means both scores in the logged response are numbers between 0 and 1. In stub mode the latency is 0 ms.
+- A "FIRST" tag in the stream marks a payment to a beneficiary with no bank payment before it.
+- The active layer card is the one whose latest decision changed last, or the one under the spotlight.
+- The header shows the bank name from `BANK_NAME` and a "Fictional scenario - synthetic data" tag; there are no logos or brand colours.
+- In case 3 the runner pauses the attack script (SIGSTOP, then SIGCONT) while a caption is read, so the narration never lags behind the screen; `--no-hold` turns this off. The breaker is not affected: the request times come from the plan.
+- The runner writes its traffic traces to `traces/demo_*.jsonl`, so a demo never rewrites `fixtures/legit.jsonl`.
+- The breaker still writes the incident trace to `INCIDENTS_DIR` (default `fixtures/incidents/`). After a demo with the soft case, `fixtures/incidents/inc_0001.jsonl` differs from the committed one in its reservation ids; restore it with `git checkout fixtures/incidents`.
+- In `--auto` mode case 4 ends when no PR watcher is running, with the caption "No pull request yet".
+- The fallback copies the rehearsal verdict to a temp file with the current incident id (and the PR URL from `latest.json` if the verdict has none) before `apply_verdict.sh` sends it.
   It stops its services through a pid file and a shell `trap`, and Python stops them too.
 
 ### Getting Devin's verdict back
