@@ -171,3 +171,10 @@ It is rendered frame by frame with a controlled clock (not a screen recording) a
 ## 2026-11-21 - Devin rehearsal: no pull request after 35 minutes
 The webhook returned HTTP 200 and Roman saw the session with the prompt and a reply from Devin, but no branch or PR appeared.
 Open: whether the session is waiting for an answer or an approval.
+
+## 2026-11-21 - First Devin rehearsal failed: Devin cannot clone the repo
+Devin's own report: its git proxy returns HTTP 403 for `hrokholskyi/sentinel_cis_hackaton`, and the repo-info call is Unauthorized, so it never started on `inc_0001`.
+Wrong assumption replaced: HTTP 200 from the automation webhook only means the session started, not that Devin can reach the repo; a public repo is not enough.
+Fix is on Roman's side: give the Devin GitHub integration (or the automation's service user) read and write access to the repo, then fire the webhook again.
+What did work: the trigger, the prompt and the incident JSON arrived, and Devin read the incident correctly from the payload alone.
+The failed rehearsal's stack and watcher were stopped; main was refreshed (code graph, change request) so the next run starts from a clean infra check.
