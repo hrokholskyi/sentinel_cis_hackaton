@@ -67,3 +67,10 @@ Latency was 284 to 966 ms against a 1 second timeout, so it is tight.
 Decision: a tuning agent improves the facts and the question wording first (honest aggregates, no hidden verdict), adds a persistent HTTP client and a warm-up, and builds `scripts/jev_eval.py`.
 Rejected for now: lowering the thresholds just to pass the demo; it stays an option only with score distributions as evidence.
 The key lives in the gitignored `.env`.
+
+## 2026-11-21 - Devin is started by an Automation webhook, the PR is found through GitHub
+Research on docs.devin.ai: Devin has Automations with a Webhook trigger; the caller sends the secret in `X-Webhook-Secret` and the payload is appended to the stored prompt.
+That is exactly what SPEC section 9 assumed, so the breaker needs no extra sender code.
+Rejected: the v3 sessions API (`POST /v3/organizations/{org_id}/sessions`), because it needs an org id, a service user key and a second sender in the breaker; it stays the fallback if the automation does not work.
+The webhook call does not return a session id, and Devin has no completion callback, so the PR is detected by polling GitHub for a new pull request that contains `verdict.json`, then the verdict is applied to the breaker.
+Not verified: nothing was called on the Devin side yet, and time from trigger to PR is undocumented.
