@@ -48,10 +48,11 @@ class FakeGitHub:
         self.server = None
         self.url = ""
 
-    def add_pr(self, number=7, created=None, files=None):
+    def add_pr(self, number=7, created=None, files=None, author="devin-ai", head_repo=REPO):
         self.pulls.append({"number": number, "html_url": f"https://github.com/{REPO}/pull/{number}",
                            "title": "Add rule", "created_at": created or ts(),
-                           "user": {"login": "devin-ai"}, "head": {"sha": SHA}})
+                           "user": {"login": author},
+                           "head": {"sha": SHA, "repo": {"full_name": head_repo}}})
         self.files[number] = files if files is not None else [
             "verdict.json", "reports/inc_0001.md", "rules/07_new_rule.sql"]
 
@@ -96,7 +97,8 @@ class FakeGitHub:
                 if rest.startswith("pulls/"):
                     parts = rest.split("/")
                     number = int(parts[1])
-                    pr = next((p for p in outer.pulls if p["number"] == number), None)
+                    pr = next((p for p in outer.pulls
+                               if isinstance(p, dict) and p["number"] == number), None)
                     if pr is None:
                         return self.send(404, {})
                     if len(parts) == 2:
@@ -181,7 +183,7 @@ def test_happy_path_after_the_attack(gh, root, stack):
     assert (pr_dir / "report.md").read_text() == "# Report\n"
     pr = json.loads((pr_dir / "pr.json").read_text())
     assert pr["number"] == 7 and pr["url"] == PR_URL and pr["head_sha"] == SHA
-    assert pr["author"] == "devin-ai" and pr["title"] == "Add rule" and pr["created_at"]
+    assert pr["author"] == "devin-ai" and pr["head_repo"] == REPO and pr["title"] == "Add rule" and pr["created_at"]
     latest = json.loads((root / ".state" / "pr" / "latest.json").read_text())
     assert set(latest) == {"number", "url", "head_sha", "dir", "verdict_file", "rules_dir",
                            "applied", "fetched_at"}
@@ -296,3 +298,127 @@ def test_repo_from_remote_urls():
     assert watch_pr.repo_from_remote("git@github.com:a/b.git\n") == "a/b"
     assert watch_pr.repo_from_remote("https://github.com/a/b") == "a/b"
     assert watch_pr.repo_from_remote("https://example.com/a/b.git") is None
+
+
+# --- who opened the pull request -------------------------------------------------
+
+def test_fork_pull_request_is_skipped_and_same_repo_one_taken(gh, root):
+    fake_with_verdict(gh, number=7, created=ts(-3))
+    gh.add_pr(number=8, created=ts(-1), author="stranger", head_repo="evil/demo",
+              files=["verdict.json"])   # newer, from a fork
+    r = watch(gh, root, "--since", ts(-5), "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("skipped PR #8 by 'stranger'") == 1
+    assert "found PR #7 by 'devin-ai'" in r.stdout
+    pr = json.loads((root / ".state" / "pr" / "7" / "pr.json").read_text())
+    assert pr["author"] == "devin-ai" and pr["head_repo"] == REPO
+    assert not (root / ".state" / "pr" / "8").exists()
+
+
+def test_head_repo_comparison_ignores_letter_case(gh, root):
+    fake_with_verdict(gh, head_repo=REPO.upper())
+    r = watch(gh, root, "--since", ts(-5), "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_deleted_head_repo_counts_as_a_fork(gh, root):
+    fake_with_verdict(gh)
+    gh.pulls[0]["head"]["repo"] = None
+    r = watch(gh, root, "--since", ts(-5), "--no-apply", timeout_min="0.02")
+    assert r.returncode == 3 and "skipped PR #7" in r.stdout
+
+
+def test_author_allowlist(gh, root):
+    fake_with_verdict(gh, author="Devin-AI")
+    r = watch(gh, root, "--since", ts(-5), "--no-apply", "--authors", "someone,else",
+              timeout_min="0.02")
+    assert r.returncode == 3
+    assert r.stdout.count("skipped PR #7 by 'Devin-AI'") == 1
+    r = watch(gh, root, "--since", ts(-5), "--no-apply", "--authors", "someone, DEVIN-ai")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_author_allowlist_from_the_environment(gh, root, monkeypatch):
+    fake_with_verdict(gh)
+    monkeypatch.setenv("WATCH_PR_AUTHORS", "nobody")
+    r = watch(gh, root, "--since", ts(-5), "--no-apply", timeout_min="0.02")
+    assert r.returncode == 3
+    monkeypatch.setenv("WATCH_PR_AUTHORS", "Devin-AI")
+    r = watch(gh, root, "--since", ts(-5), "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_pr_option_refuses_a_fork_with_exit_2(gh, root):
+    fake_with_verdict(gh, author="stranger", head_repo="evil/demo")
+    r = watch(gh, root, "--no-apply", "--pr", "7")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "refusing PR #7" in r.stderr and "--allow-forks" in r.stderr
+    assert not (root / ".state").exists()
+
+
+def test_pr_option_refuses_an_author_not_in_the_allowlist(gh, root):
+    fake_with_verdict(gh)
+    r = watch(gh, root, "--no-apply", "--pr", "7", "--authors", "other")
+    assert r.returncode == 2 and "not in the allowed authors" in r.stderr
+
+
+def test_allow_forks_accepts_a_fork(gh, root):
+    fake_with_verdict(gh, author="stranger", head_repo="evil/demo")
+    r = watch(gh, root, "--no-apply", "--pr", "7", "--allow-forks")
+    assert r.returncode == 0, r.stdout + r.stderr
+    pr = json.loads((root / ".state" / "pr" / "7" / "pr.json").read_text())
+    assert pr["author"] == "stranger" and pr["head_repo"] == "evil/demo"
+
+
+# --- the shape of API answers ------------------------------------------------------
+
+def test_malformed_list_entries_are_skipped_without_a_crash(gh, root):
+    fake_with_verdict(gh, number=7, created=ts(-3))
+    good = gh.pulls[0]
+    bad = [
+        "a string", 5, None, ["list"],
+        {**good, "number": "../../../etc"},
+        {**good, "number": True},
+        {**good, "number": 0},
+        {**good, "number": -3},
+        {**good, "number": 1.5},
+        {**good, "number": 9, "head": {"sha": "../x", "repo": {"full_name": REPO}}},
+        {**good, "number": 10, "head": "nope"},
+        {**good, "number": 11, "html_url": "file:///etc/passwd"},
+        {**good, "number": 13, "created_at": "yesterday"},
+        {**good, "number": 14, "user": "devin"},
+    ]
+    gh.pulls[:] = bad + [good]
+    r = watch(gh, root, "--since", ts(-5), "--no-apply")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr
+    assert "skipped a malformed pull request entry" in r.stdout
+    assert json.loads((root / ".state" / "pr" / "latest.json").read_text())["number"] == 7
+    assert sorted(p.name for p in (root / ".state" / "pr").iterdir()) == ["7", "latest.json"]
+    assert sorted(p.name for p in root.iterdir()) == [".state"]
+
+
+def test_non_integer_number_is_never_used_as_a_path(gh, root):
+    fake_with_verdict(gh)
+    gh.pulls[0]["number"] = "../../escape"
+    r = watch(gh, root, "--since", ts(-5), "--no-apply", timeout_min="0.02")
+    assert r.returncode == 3 and "Traceback" not in r.stderr
+    assert not (root / ".state").exists()
+    assert not list(root.parent.glob("escape*"))
+
+
+def test_non_dict_file_entries_do_not_crash():
+    import watch_pr
+    files = ["x", 3, None, {"filename": "verdict.json", "status": "added"}]
+    assert watch_pr.find_verdict_path(files) == "verdict.json"
+    assert watch_pr.find_report_path(files) is None
+
+
+def test_url_and_shape_rules():
+    import watch_pr
+    pr = {"number": 1, "html_url": "https://github.com/a/b/pull/1", "head": {"sha": "abc1234"}}
+    assert watch_pr.check_shape(pr, "https://api.github.com") is None
+    assert watch_pr.check_shape({**pr, "html_url": "http://x/y"}, "https://api.github.com")
+    assert watch_pr.check_shape({**pr, "html_url": "http://x/y"}, "http://127.0.0.1:1") is None
+    assert watch_pr.check_shape({**pr, "head": {"sha": "ABC1234"}}, "https://a")
+    assert watch_pr.check_shape({**pr, "head": {"sha": "abc12"}}, "https://a")

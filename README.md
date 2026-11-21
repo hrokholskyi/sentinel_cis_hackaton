@@ -264,10 +264,14 @@ scripts/watch_pr.sh --no-apply           # save the artifacts only
 It polls the GitHub API (`GITHUB_API_URL`, default `https://api.github.com`) every `--interval` seconds (default 10) until `--timeout-min` (default 30).
 It takes the newest open pull request created at or after `--since` (default: the watcher start time) that has a valid `verdict.json`.
 `--pr N` picks one pull request and ignores `--since`; `--incident ID` ignores verdict files for other incidents.
+Only pull requests whose head branch lives in the watched repository are used, so a stranger cannot feed the breaker from a fork.
+A pull request from a fork is skipped with one log line that names its number and author; `--allow-forks` switches that check off.
+`--authors a,b` (or `WATCH_PR_AUTHORS`) limits the accepted authors, case-insensitive; without it any author with a branch in the repository is accepted, and the "found PR" line names the author.
+With `--pr N` the same checks apply, and a refusal exits 2.
 The token comes from `GITHUB_TOKEN`, else `gh auth token`; with neither, GitHub allows 60 requests per hour and the watcher warns once.
 On a 403 or 429 it sleeps until the rate limit resets, at most 60 seconds, and tries again.
 
-Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` with every `rules/*.sql` at the pull request head, `report.md` if there is a `reports/*.md` file, and `pr.json`.
+Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` with every `rules/*.sql` at the pull request head, `report.md` if there is a `reports/*.md` file, and `pr.json` (with the author login and `head_repo`).
 `.state/pr/latest.json` points to them for other scripts, paths relative to the repo root:
 
 ```json
@@ -279,7 +283,8 @@ Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` wi
 The verdict is sent to `BREAKER_URL` with `ADMIN_TOKEN`, like `scripts/apply_verdict.sh`.
 `pr_url` is always set to the real pull request URL, and fields the endpoint does not accept are dropped with a note.
 Everything from the pull request is untrusted: nothing is executed, only `rules/<name>.sql` with names matching `^[A-Za-z0-9_.-]+$` is saved, paths with `..` or a leading `/` are refused, and every download is capped at 200 KB.
-Exit codes: 0 done, 2 setup error, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
+Malformed API answers (a number that is not a positive integer, a bad head sha, a URL that is not https) are skipped with one log line.
+Exit codes: 0 done, 2 setup error or a refused `--pr`, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
 `tests/test_watch_pr.py` runs the watcher against a fake GitHub API.
 
 ## Before the demo
@@ -300,6 +305,7 @@ After merging a pull request that changes a rule, run the same steps again.
 
 ## Choices left open by the spec
 
+- The watcher takes only pull requests from branches in the watched repository (not forks), optionally limited to `--authors`; `--allow-forks` is the explicit opt-out.
 - Demo calendar is fixed on `DEMO_DATE` = D = 2026-11-21.
   Seed history covers the 90 days ending D-2, legit traffic runs on D-1 from 09:00, the attack runs on D from 02:00.
 - All timestamps are stored as Gulf time (UTC+4, no DST) naive strings `YYYY-MM-DD HH:MM:SS`, so SQLite `datetime()` works on them.
@@ -458,5 +464,6 @@ After merging a pull request that changes a rule, run the same steps again.
 - A rule file that is too large or has an unsafe name is skipped with a warning and the rest are saved; `.state/pr/<number>/` is rebuilt from scratch on each run.
 - `latest.json` is written once with `applied: false` after the artifacts are saved, and again with `applied: true` after the breaker accepted the verdict.
 - Any breaker failure (HTTP error or not reachable) exits 4.
+- Without `--authors`, any account that can push a branch to the watched repository is trusted; the fork check is the main guard, the allowlist is optional.
 - `--timeout-min 0` means one poll, then exit 3 if nothing usable was found.
 - The test-only option `--repo-root` moves `.state/` away from the repo.

@@ -32,6 +32,7 @@ MAX_FILE_BYTES = 200 * 1024
 MAX_LIST_BYTES = 4 * 1024 * 1024
 RULE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 INCIDENT_ID = re.compile(r"^[A-Za-z0-9_]+$")
+SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 VERDICT_FIELDS = ("incident_id", "verdict", "reason", "evidence", "pr_url")
 EVIDENCE_FIELDS = ("basis_ids", "prior_payment_ids")
 
@@ -215,7 +216,9 @@ def find_verdict_path(files: list) -> Optional[str]:
     """Path of a verdict.json among the changed files; the one at the repo root wins."""
     found = []
     for f in files:
-        name = f.get("filename") if isinstance(f, dict) else None
+        if not isinstance(f, dict):
+            continue
+        name = f.get("filename")
         if f.get("status") == "removed":
             continue
         if isinstance(name, str) and name.split("/")[-1] == "verdict.json":
@@ -250,12 +253,101 @@ def clean_verdict(data) -> tuple[dict, list[str]]:
 
 # --- finding the pull request ------------------------------------------------------
 
-def candidates(gh: GitHub, args, since: datetime) -> list[dict]:
+def url_ok(url, api: str) -> bool:
+    """https always; http only when the API itself is http (the local fake in the tests)."""
+    if not isinstance(url, str):
+        return False
+    return url.startswith("https://") or (api.lower().startswith("http://")
+                                          and url.startswith("http://"))
+
+
+def check_shape(pr, api: str) -> Optional[str]:
+    """None if the pull request entry has the shape we rely on, else the reason it is refused."""
+    if not isinstance(pr, dict):
+        return "entry is not an object"
+    number = pr.get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return f"bad number {str(number)[:20]!r}"
+    head = pr.get("head")
+    sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(sha, str) or not SHA_RE.match(sha):
+        return "bad head sha"
+    if not url_ok(pr.get("html_url"), api):
+        return "bad html_url"
+    if not isinstance(pr.get("title", ""), str):
+        return "bad title"
+    user = pr.get("user")
+    if user is not None and not (isinstance(user, dict)
+                                 and isinstance(user.get("login", ""), str)):
+        return "bad user"
+    created = pr.get("created_at", "")
+    if created is not None and not isinstance(created, str):
+        return "bad created_at"
+    if created:
+        try:
+            parse_time(created)
+        except ValueError:
+            return "bad created_at"
+    return None
+
+
+def author_of(pr: dict) -> str:
+    return ((pr.get("user") or {}).get("login") or "")
+
+
+def head_repo_of(pr: dict) -> str:
+    repo = (pr.get("head") or {}).get("repo")
+    name = repo.get("full_name") if isinstance(repo, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def check_origin(pr: dict, repo: str, args) -> Optional[str]:
+    """None if the pull request may be used, else the reason it is refused."""
+    who = author_of(pr)
+    head_repo = head_repo_of(pr)
+    if not args.allow_forks and head_repo.lower() != repo.lower():
+        return (f"its head branch is in {head_repo or 'an unknown repository'!r}, "
+                f"not in {repo} (author {who!r})")
+    if args.authors and who.lower() not in args.authors:
+        return f"author {who!r} is not in the allowed authors"
+    return None
+
+
+def candidates(gh: GitHub, args, since: datetime, api: str, reported: set) -> list[dict]:
+    """Usable open pull requests, newest first. Each refusal is logged once."""
+    def refuse(key: str, msg: str) -> None:
+        if key not in reported:
+            reported.add(key)
+            say(msg)
+
     if args.pr is not None:
         pr = gh.pull(args.pr)
-        return [pr] if isinstance(pr, dict) else []
-    pulls = [p for p in gh.open_pulls() if isinstance(p, dict) and p.get("created_at")]
-    out = [p for p in pulls if parse_time(p["created_at"]) >= since]
+        if pr is None:
+            return []
+        bad = check_shape(pr, api)
+        if bad or pr["number"] != args.pr:
+            raise WatchError(f"GitHub returned a malformed answer for PR #{args.pr}: "
+                             f"{bad or 'wrong number'}", 5)
+        why = check_origin(pr, gh.repo, args)
+        if why:
+            raise WatchError(f"refusing PR #{args.pr}: {why}"
+                             + ("" if args.allow_forks else " (--allow-forks overrides the "
+                                                           "branch check)"), 2)
+        return [pr]
+    out = []
+    for i, pr in enumerate(gh.open_pulls()):
+        bad = check_shape(pr, api)
+        if bad or not pr.get("created_at"):
+            refuse(f"bad{i}:{bad}", f"skipped a malformed pull request entry: "
+                                    f"{bad or 'no created_at'}")
+            continue
+        if parse_time(pr["created_at"]) < since:
+            continue
+        why = check_origin(pr, gh.repo, args)
+        if why:
+            refuse(f"pr{pr['number']}", f"skipped PR #{pr['number']} by {author_of(pr)!r}: {why}")
+            continue
+        out.append(pr)
     out.sort(key=lambda p: p["created_at"], reverse=True)
     return out
 
@@ -339,7 +431,7 @@ def save_artifacts(gh: GitHub, pr: dict, raw: bytes, files: list, state: Path, r
             (pr_dir / "report.md").write_bytes(body)
 
     pr_json = {"number": number, "url": pr["html_url"], "title": pr.get("title", ""),
-               "head_sha": sha, "author": (pr.get("user") or {}).get("login", ""),
+               "head_sha": sha, "author": author_of(pr), "head_repo": head_repo_of(pr),
                "created_at": pr.get("created_at", "")}
     (pr_dir / "pr.json").write_text(json.dumps(pr_json, indent=2) + "\n")
     say(f"saved artifacts in {rel(pr_dir, root)} ({saved} rule files"
@@ -411,15 +503,18 @@ def run(args) -> int:
     deadline = time.monotonic() + args.timeout_min * 60
     api = os.environ.get("GITHUB_API_URL", "").strip() or "https://api.github.com"
     gh = GitHub(api, repo, token, deadline)
+    reported: set = set()
     what = f"PR #{args.pr}" if args.pr is not None else f"open PRs since {iso(since)}"
     say(f"watching {repo} for {what}")
     try:
         waiting_said = False
         while True:
             found = None
-            for pr in candidates(gh, args, since):
-                if not waiting_said:
-                    say(f"found PR #{pr['number']}: {str(pr.get('title', ''))[:80]!r}")
+            for pr in candidates(gh, args, since, api, reported):
+                if f"found{pr['number']}" not in reported:
+                    reported.add(f"found{pr['number']}")
+                    say(f"found PR #{pr['number']} by {author_of(pr)!r} "
+                        f"from {head_repo_of(pr) or '?'}: {str(pr.get('title', ''))[:80]!r}")
                 res = look_for_verdict(gh, args, pr)
                 if res:
                     found = (pr, res)
@@ -460,6 +555,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--since", help="ISO 8601 UTC; only PRs created at or after it "
                                    "(default: now)")
     p.add_argument("--pr", type=int, help="watch this PR number, ignore --since")
+    p.add_argument("--authors", default=os.environ.get("WATCH_PR_AUTHORS", ""),
+                   help="comma separated GitHub logins allowed to open the PR "
+                        "(default: $WATCH_PR_AUTHORS, else any author with a branch in the repo)")
+    p.add_argument("--allow-forks", action="store_true",
+                   help="accept pull requests whose head branch is in another repository")
     p.add_argument("--incident", help="ignore verdict files for other incidents")
     p.add_argument("--interval", type=float, default=10, help="seconds between polls")
     p.add_argument("--timeout-min", type=float, default=30, help="give up after this (exit 3)")
@@ -468,6 +568,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--repo-root", default=str(ROOT), help=argparse.SUPPRESS)
     args = p.parse_args(argv)
     QUIET = args.quiet
+    args.authors = {a.strip().lower() for a in args.authors.split(",") if a.strip()}
     if args.since:
         try:
             parse_time(args.since)
