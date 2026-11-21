@@ -198,3 +198,11 @@ Jev is still asked about payments without a basis, because the demo narrates tho
 Verified by the main agent: full guided run with live Jev on spare ports gave 42 of 42, soft case released at 0.98, attack 6 leaked and 36 held, 4002 ms.
 Known limits are listed in the README; the main one is that the toy bank still accepts the client's API key directly.
 Consequence for operations: `apply_verdict.sh` and `watch_pr.sh` in another terminal need `set -a; . .state/demo/tokens.env; set +a` when the stack was started by `demo.sh`.
+
+## 2026-11-21 - Stage robustness review: findings and run sheet
+About 40 guided runs with local fakes. The demo core held: Ctrl-C always cleans up, all Jev and webhook failures fail closed and are reported truthfully, the dashboard recovers after a restart.
+Main risks found: the `f` fallback claims "less than a minute after the pause" for a rehearsal pull request; the last Enter stops the services so the projector shows OFFLINE; a buffered Enter skips a pause; `open` steals keyboard focus; the PR watcher dies on the first network error; `.env` overrides values given on the command line; `--from N` is useless after a crash because `demo.sh` always reseeds; a stage run rewrites the committed incident trace.
+Decision: one fix agent handles these (findings A to N in its brief).
+Measured timing: 2 min 40 s without the tour, 3 min 32 s with it; the tour is the first thing to cut for a 5-minute slot.
+Rejected earlier decision: keeping the incident trace in `fixtures/incidents/` during stage runs; it goes to `.state/demo/incidents` and the webhook keeps naming the committed path.
+Still true: there is no finished Devin pull request, so the Devin step has no fallback yet.
