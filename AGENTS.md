@@ -65,8 +65,11 @@ Done means all four items are in the pull request and `scripts/replay.sh` and `p
 2. The report at `reports/<incident_id>.md`.
 3. Exactly one new rule file in `rules/`, named `NN_<rule_id>.sql` with the next free number, in the format of `rules/README.md`.
    A broken rule holds every payment, so replay before you push.
+   The rule must be a single read-only `SELECT` (or `WITH ... SELECT`). Any other statement stops the breaker from starting.
 4. A regression test in a new file under `tests/` that uses `scripts/replaylib.py`. `rules/README.md` has an example.
    - Replay `fixtures/legit.jsonl` first, then the attack trace.
+   - The simulated clock (`X-Sim-Time`) counts only together with the header `X-Sim-Token`. The replay harness sends it by itself.
+     If your test posts to the breaker directly, send `X-Sim-Token: common.SIM_TOKEN` with `X-Sim-Time`, or real time is used.
    - Start the stack with the full live `rules/` folder, so your new rule is loaded: `replaylib.start(tmp_path)` (its default), or `make_stack(rules_dir=replaylib.ROOT / "rules")`.
    - The plain `stack` and `make_stack` fixtures run on a pinned baseline of the six original rules (`baseline_rules_dir()` in `tests/conftest.py`), so they do not load your rule. Use them only as described above.
 

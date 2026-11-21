@@ -91,7 +91,7 @@ Keys in the terminal:
 | Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services |
 | `C` | on the dashboard | subtitles on or off |
 
-When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --timeout-min 30` if that script exists.
+When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --incident <id> --timeout-min 30` if that script exists.
 Its log is `.state/demo/watch_pr.log`.
 Case 5 replays against `rules_dir` from `.state/pr/latest.json`.
 Without it the runner shows only the "before" table and says the fix is not available yet.
@@ -340,6 +340,8 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
 | `HOLD_TTL_MIN` | `30` | not used before milestone 6 |
 | `DEMO_DATE` | `2026-11-21` | seed, traffic scripts |
 | `BANK_NAME` | `ADCB` | dashboard header and demo captions (text only) |
+| `SIM_TOKEN` | `dev-sim-token` | bank, breaker: `X-Sim-Time` counts only with this value in `X-Sim-Token`; traffic scripts and replay send it |
+| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | bank, breaker: accepted `Host` header values, comma separated |
 
 ## Incidents and verdicts
 
@@ -431,6 +433,41 @@ Everything from the pull request is untrusted: nothing is executed, only `rules/
 Malformed API answers (a number that is not a positive integer, a bad head sha, a URL that is not https) are skipped with one log line.
 Exit codes: 0 done, 2 setup error or a refused `--pr`, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
 `tests/test_watch_pr.py` runs the watcher against a fake GitHub API.
+
+## Security hardening
+
+Fixes from the code and security review.
+Each one has a test in `tests/test_hardening_*.py` that reproduces the problem on a real stack.
+
+- Jev release is re-checked: after Jev answers `release`, one `BEGIN IMMEDIATE` transaction requires that the reservation is still the soft hold made by the rules (not decided by an admin, a verdict or expiry, not attached to an incident) and that the key is still `normal`.
+  Only then does it become `released`, and only after the commit is it sent; otherwise the hold stays and a `jev` event says why.
+- One basis releases one payment: a Jev release needs the payment's own `basis_id`, approved, unused, of this client and beneficiary, with exactly the payment amount, and not carried by another `pending`, `released` or `executed` reservation.
+  This is the same re-check as a `release` verdict (`incidents.recheck`), so a prompt injection in `purpose` cannot release a payment without such a basis.
+  Jev is still asked and its answer is logged; this code gate decides whether a `release` answer may be acted on, and the stub scores a used basis low.
+- A rule error blocks a Jev release: if any violation comes from a rule error, the payment stays on hold.
+- The simulated clock needs a token: `X-Sim-Time` counts only with `X-Sim-Token` equal to `SIM_TOKEN` (constant-time compare) and only with `DEMO_MODE=1`.
+  Without a valid token the header is ignored, real time is used and the breaker writes a `clock` event; the breaker passes the token to the bank only with a time it accepted.
+- Rules are read-only: they run under a SQLite authorizer that allows only reads, so a statement that writes is a rule error (violated).
+  A rule file that is not a single `SELECT` or `WITH ... SELECT` stops the breaker from starting.
+- No double payment on an unclear bank outcome: the breaker sends the reservation id as `Idempotency-Key`, and the bank answers a repeated key with the stored payment.
+  Before any send the breaker looks for a bank payment with that key and, if there is one, marks the reservation `executed` instead of sending.
+- Restart: at start the breaker settles every `pending` or `released` row without a payment id: `executed` if the bank has its payment, otherwise `held` with rule id `restart_unclear` and an event.
+- A verdict updates only an incident that is still open, so it cannot reopen one that an admin resume closed while a release ran.
+- Both services accept only the `Host` values in `ALLOWED_HOSTS` (default `127.0.0.1,localhost`), against DNS rebinding from a page in the stage browser.
+- `scripts/demo.sh` generates a random `ADMIN_TOKEN` and `SIM_TOKEN` for each run when they are not set, passes them to everything it starts and writes them to `.state/demo/tokens.env` (mode 600, never printed).
+  In another terminal load them with `set -a; . .state/demo/tokens.env; set +a` before `scripts/apply_verdict.sh` or `scripts/watch_pr.sh`.
+- `scripts/demo.py` starts the PR watcher with `--incident <id>` of the open incident, so a verdict file for another incident is ignored.
+
+### Known limits
+
+- The bank accepts the client's API key directly, so a client that calls the bank itself bypasses the breaker.
+  The toy bank has this gap by design (SPEC section 5).
+- The development defaults `dev-admin-token` and `dev-sim-token` are public.
+  Outside `scripts/demo.sh`, set `ADMIN_TOKEN` and `SIM_TOKEN` yourself when anyone else can reach the services.
+- Every request with an ignored `X-Sim-Time` writes one event, so such a client can push other events out of the dashboard's last 10.
+- The bank does not compare the body of a repeated `Idempotency-Key` with the stored payment; it returns the stored payment.
+- The idempotency key is the reservation id, which is unique only while `bank.db` and `breaker.db` are seeded together (the seed always recreates both).
+- A soft stop on a key in `probe` is never released by Jev, because the key must be `normal`.
 
 ## Choices left open by the spec
 
@@ -607,6 +644,27 @@ Exit codes: 0 done, 2 setup error or a refused `--pr`, 3 timeout, 4 the breaker 
 - Only a payment with no rule violation counts as clean; a Jev release in probe does not.
 - New variables `PROBE_MAX_AMOUNT_AED` (1000) and `PROBE_CLEAN_PAYMENTS` (5), read once at breaker start.
 - `key_state` has a new column `probe_clean`; databases from before milestone 6 need a fresh seed.
+
+### Security hardening
+
+- The development default of `SIM_TOKEN` is `DEV_SIM_TOKEN` in `scripts/common.py`; both services import it from there, so it is defined once.
+  An empty `SIM_TOKEN` counts as not set.
+- Only the breaker writes the `clock` event for an ignored `X-Sim-Time`; the bank has no event log and ignores the header silently.
+  With `DEMO_MODE=0` the header is ignored without an event.
+- A verdict or admin call without `X-Sim-Time` still uses the request clock, and a `release` still sends that time to the bank, now with the breaker's own `X-Sim-Token`.
+- `jev_calls.released` is 1 only when the payment was really released.
+  A `release` answer refused by the gate is logged with `released = 0`, its scores stay in `response_json`, and the event reads "Jev answered release for ..., hold kept: <why>".
+- The Jev release gate reuses the verdict re-check, so it also needs a bank payment to the beneficiary before the hold.
+  A basis carried by an `executed` reservation is now also unavailable to a `release` verdict (before, only `pending` and `released`); the bank's `used` flag already covered that case.
+- The bank answers a repeated `Idempotency-Key` of the same API key with the stored payment (HTTP 200, same shape as a new one) and a key used by another API key with 409.
+  `bank.payments` has a new nullable unique column `idempotency_key`; databases from before need a fresh seed.
+- Restart reconciliation runs once when the breaker starts (FastAPI lifespan), timed on each row's own request clock.
+  Settled rows get `decided_by = restart`; `restart_unclear` holds have `level = hard`, so Jev never releases them, and they expire like other holds.
+  Without databases it is skipped with a warning on stderr.
+- The load-time rule check reads the SQL as tokens and ignores comments and string literals: one statement, and the first word is `SELECT`, or `WITH` with `SELECT` as the first verb outside the parentheses.
+  The authorizer at run time is the real guard.
+- `scripts/demo.sh` also treats a token equal to its development default as not set, so a `.env` copied from `.env.example` still gets random tokens.
+- `ALLOWED_HOSTS` values are compared without the port (Starlette `TrustedHostMiddleware`).
 
 ### Getting Devin's verdict back
 

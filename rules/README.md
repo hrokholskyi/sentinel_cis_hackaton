@@ -15,6 +15,9 @@ Rules run in file-name order, so a new rule takes the next free number.
 ## File format
 
 A rule file is header comments followed by exactly one `SELECT`.
+It must be a single read-only `SELECT` (or `WITH ... SELECT`) statement.
+Any other statement (`UPDATE`, `INSERT`, `DELETE`, `PRAGMA`, a second statement) stops the breaker from starting.
+Rules also run under a read-only SQLite authorizer, so a write at run time is a rule error.
 
 ```sql
 -- id: burst_count_5m
@@ -101,6 +104,8 @@ Bank tables (history and master data):
 
 All timestamps are local Gulf time (UTC+4, no daylight saving) stored as text `YYYY-MM-DD HH:MM:SS`, so SQLite `datetime()`, `time()` and `julianday()` work on them.
 In the demo the request clock is simulated (header `X-Sim-Time`) and it goes backwards between scenarios.
+The services honour `X-Sim-Time` only together with the header `X-Sim-Token` (the value of `common.SIM_TOKEN`); without it they use real time.
+`replaylib.replay()` and the traffic scripts send it by themselves, so a replay test needs nothing extra.
 So every time window needs both bounds: `created_at >= datetime(:now, '-5 minutes') AND created_at <= :now`.
 "Prior payments" of a beneficiary are `bank.payments` rows with `created_at < :now`.
 The webhook reports the window of the tripping rule.
