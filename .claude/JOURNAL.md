@@ -189,3 +189,12 @@ Open content notes from the render: the subtitle fade in the preview does nothin
 ## 2026-11-21 - Pitch deck drawn on a design canvas
 Nine slides in the product's own look, with real numbers only and placeholders for team, contact and the pause-to-PR time.
 The "0 of 42 after the new rule" number comes from the main agent's scratch rule, not from a Devin pull request yet.
+
+## 2026-11-21 - Security hardening merged and verified
+All review findings are fixed, each with a test that failed on the old code: 89 tests pass.
+One code gate now guards every Jev release, in a single `BEGIN IMMEDIATE` transaction: the reservation must still be the soft hold made by the rules, the key must be `normal`, and the payment must carry an approved, unused basis of the same amount (the same `incidents.recheck` as a release verdict).
+Jev is still asked about payments without a basis, because the demo narrates those answers; the gate decides whether a release may be acted on.
+`X-Sim-Time` needs `X-Sim-Token`; rules run under a read-only SQLite authorizer; the bank is idempotent on the reservation id; `demo.sh` uses random per-run tokens written to `.state/demo/tokens.env`.
+Verified by the main agent: full guided run with live Jev on spare ports gave 42 of 42, soft case released at 0.98, attack 6 leaked and 36 held, 4002 ms.
+Known limits are listed in the README; the main one is that the toy bank still accepts the client's API key directly.
+Consequence for operations: `apply_verdict.sh` and `watch_pr.sh` in another terminal need `set -a; . .state/demo/tokens.env; set +a` when the stack was started by `demo.sh`.
