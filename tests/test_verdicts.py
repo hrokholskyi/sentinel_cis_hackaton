@@ -14,7 +14,8 @@ ADMIN = {"X-Admin-Token": "dev-admin-token"}
 
 def pay(stack, ts: datetime, body: dict) -> dict:
     r = httpx.post(stack.breaker_url + "/payouts", json=body, timeout=10,
-                   headers={"X-API-Key": common.API_KEY_SECRET, "X-Sim-Time": common.iso(ts)})
+                   headers={"X-API-Key": common.API_KEY_SECRET, "X-Sim-Time": common.iso(ts),
+                            "X-Sim-Token": common.SIM_TOKEN})
     assert r.status_code in (200, 202), r.text
     return r.json()
 

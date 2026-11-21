@@ -85,6 +85,7 @@ def demo_run(tmp: Path, bank_port: int, breaker_port: int) -> dict:
         "BANK_URL": f"http://127.0.0.1:{bank_port}",
         "BREAKER_URL": f"http://127.0.0.1:{breaker_port}",
         "INCIDENTS_DIR": str(tmp / "incidents"), "DEMO_MODE": "1", "JEV_MODE": "stub",
+        "SIM_TOKEN": c.SIM_TOKEN,  # the traffic scripts send it with X-Sim-Time
     })
     env.pop("DEVIN_WEBHOOK_URL", None)
     _run(env, "seed.py")

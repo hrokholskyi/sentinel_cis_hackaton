@@ -73,6 +73,7 @@ def base_env(workdir: PathLike, rules_dir: Optional[PathLike] = None) -> dict:
         "RULES_DIR": str(Path(rules_dir).resolve() if rules_dir else ROOT / "rules"),
         "DEMO_MODE": "1",
         "JEV_MODE": "stub",
+        "SIM_TOKEN": common.SIM_TOKEN,  # the services honour X-Sim-Time only with it
     })
     for name in ("DEVIN_WEBHOOK_URL", "DEVIN_WEBHOOK_SECRET"):
         env.pop(name, None)
@@ -189,13 +190,15 @@ class Result:
 
 
 def replay(breaker_url: str, trace: PathLike, name: Optional[str] = None) -> Result:
-    """POST every request of a trace to the breaker with its sim_time; count the outcomes."""
+    """POST every request of a trace to the breaker with its sim_time (and the X-Sim-Token
+    the services expect); count the outcomes."""
     out = Result(name or Path(trace).stem)
     with httpx.Client(base_url=breaker_url.rstrip("/"), timeout=10.0) as client:
         for line in read_trace(trace):
             r = client.post("/payouts", json=line["request"],
                             headers={"X-API-Key": common.API_KEY_SECRET,
-                                     "X-Sim-Time": line["sim_time"]})
+                                     "X-Sim-Time": line["sim_time"],
+                                     "X-Sim-Token": common.SIM_TOKEN})
             try:
                 data = r.json()
             except ValueError:

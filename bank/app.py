@@ -5,6 +5,7 @@ the beneficiary is approved, the balance is enough. It never looks at history, t
 bursts or bases. That is the breaker's job.
 """
 
+import hmac
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -13,10 +14,13 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from scripts.common import DEV_SIM_TOKEN
+
 GULF = timezone(timedelta(hours=4))  # Asia/Dubai, no DST
 
 BANK_DB = os.environ.get("BANK_DB", "bank.db")
 DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
+SIM_TOKEN = os.environ.get("SIM_TOKEN") or DEV_SIM_TOKEN
 
 app = FastAPI(title="Toy bank")
 
@@ -29,9 +33,11 @@ class Payout(BaseModel):
     basis_id: Optional[str] = None
 
 
-def now_local(sim_time: Optional[str]) -> str:
-    """Current Gulf time as 'YYYY-MM-DD HH:MM:SS'. X-Sim-Time wins in demo mode."""
-    if DEMO_MODE and sim_time:
+def now_local(sim_time: Optional[str], sim_token: Optional[str] = None) -> str:
+    """Current Gulf time as 'YYYY-MM-DD HH:MM:SS'. X-Sim-Time wins in demo mode, and only
+    with X-Sim-Token equal to SIM_TOKEN; otherwise the header is ignored."""
+    valid = bool(sim_token) and hmac.compare_digest(sim_token.encode(), SIM_TOKEN.encode())
+    if DEMO_MODE and sim_time and valid:
         try:
             ts = datetime.fromisoformat(sim_time)
         except ValueError:
@@ -69,8 +75,9 @@ def payout(
     body: Payout,
     x_api_key: Optional[str] = Header(default=None),
     x_sim_time: Optional[str] = Header(default=None),
+    x_sim_token: Optional[str] = Header(default=None),
 ):
-    now = now_local(x_sim_time)
+    now = now_local(x_sim_time, x_sim_token)
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")

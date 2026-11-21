@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from breaker import dashboard, engine, incidents, jev
+from scripts.common import DEV_SIM_TOKEN
 
 GULF = timezone(timedelta(hours=4))  # Asia/Dubai, no DST
 
@@ -37,6 +38,7 @@ RULES_DIR = os.environ.get("RULES_DIR", "rules")
 INCIDENTS_DIR = os.environ.get("INCIDENTS_DIR", "fixtures/incidents")
 DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "dev-admin-token")
+SIM_TOKEN = os.environ.get("SIM_TOKEN") or DEV_SIM_TOKEN
 SOFT_MIN_AMOUNT_AED = float(os.environ.get("SOFT_MIN_AMOUNT_AED", "5000"))
 HOLD_TTL_MIN = int(os.environ.get("HOLD_TTL_MIN", "30"))
 PROBE_MAX_AMOUNT_AED = float(os.environ.get("PROBE_MAX_AMOUNT_AED", "1000"))
@@ -72,6 +74,27 @@ def now_local(sim_time: Optional[str]) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def sim_clock(x_sim_time: Optional[str] = Header(default=None),
+              x_sim_token: Optional[str] = Header(default=None)) -> Optional[str]:
+    """The X-Sim-Time to use, or None for real time. Endpoints get it as `x_sim_time`.
+
+    Honoured only in demo mode and only with X-Sim-Token equal to SIM_TOKEN (constant-time
+    compare), so a client cannot choose its own clock. Without a valid token the header is
+    ignored and an event says so.
+    """
+    if not DEMO_MODE or not x_sim_time:
+        return None
+    if x_sim_token and hmac.compare_digest(x_sim_token.encode(), SIM_TOKEN.encode()):
+        return x_sim_time
+    conn = connect()
+    try:
+        engine.add_event(conn, now_local(None), "clock",
+                         "X-Sim-Time ignored: no valid X-Sim-Token, real time used")
+    finally:
+        conn.close()
+    return None
+
+
 def connect() -> sqlite3.Connection:
     """One connection per request; bank.db attached read-only as schema `bank`."""
     conn = sqlite3.connect(Path(BREAKER_DB).resolve().as_uri(), uri=True,
@@ -101,8 +124,9 @@ def forward(conn, res, secret: str, sim_time: Optional[str], now: str,
     if res["basis_id"]:
         body["basis_id"] = res["basis_id"]
     headers = {"X-API-Key": secret}
-    if DEMO_MODE and sim_time:
+    if DEMO_MODE and sim_time:  # a time this breaker accepted or derived from accepted ones
         headers["X-Sim-Time"] = sim_time
+        headers["X-Sim-Token"] = SIM_TOKEN
     try:
         r = httpx.post(f"{BANK_URL}/payouts", json=body, headers=headers, timeout=10.0)
         data = r.json()
@@ -216,7 +240,7 @@ def health():
 def payout(
     body: Payout,
     x_api_key: Optional[str] = Header(default=None),
-    x_sim_time: Optional[str] = Header(default=None),
+    x_sim_time: Optional[str] = Depends(sim_clock),
 ):
     t0 = time.perf_counter()
     now = now_local(x_sim_time)
@@ -317,7 +341,7 @@ def payout(
 # --- admin ------------------------------------------------------------------
 
 @app.post("/admin/keys/{key_id}/resume", dependencies=[Depends(require_admin)])
-def resume_key(key_id: str, x_sim_time: Optional[str] = Header(default=None)):
+def resume_key(key_id: str, x_sim_time: Optional[str] = Depends(sim_clock)):
     now = now_local(x_sim_time)
     conn = connect()
     try:
@@ -374,7 +398,7 @@ def _take_hold(conn, res_id: str, new_status: str, now: str, sim_time: Optional[
 
 
 @app.post("/admin/holds/{res_id}/release", dependencies=[Depends(require_admin)])
-def release_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
+def release_hold(res_id: str, x_sim_time: Optional[str] = Depends(sim_clock)):
     now = now_local(x_sim_time)
     conn = connect()
     try:
@@ -390,7 +414,7 @@ def release_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
 
 
 @app.post("/admin/holds/{res_id}/reject", dependencies=[Depends(require_admin)])
-def reject_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
+def reject_hold(res_id: str, x_sim_time: Optional[str] = Depends(sim_clock)):
     now = now_local(x_sim_time)
     conn = connect()
     try:
@@ -452,7 +476,7 @@ def _release(conn, inc, now: str, sim_time: str) -> tuple[list, list]:
 
 
 @app.post("/incidents/{incident_id}/verdict", dependencies=[Depends(require_admin)])
-def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Header(default=None)):
+def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Depends(sim_clock)):
     if body.incident_id != incident_id:
         raise HTTPException(422, "incident_id in the body does not match the path")
     with VERDICT_LOCK:

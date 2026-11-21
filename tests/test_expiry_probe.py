@@ -17,7 +17,8 @@ DORMANT = {"account_id": common.ACCOUNT_ID, "beneficiary_id": "ben_dorm_01",
 
 def pay(stack, ts: datetime, body: dict) -> dict:
     r = httpx.post(stack.breaker_url + "/payouts", json=body, timeout=10,
-                   headers={"X-API-Key": common.API_KEY_SECRET, "X-Sim-Time": common.iso(ts)})
+                   headers={"X-API-Key": common.API_KEY_SECRET, "X-Sim-Time": common.iso(ts),
+                            "X-Sim-Token": common.SIM_TOKEN})
     assert r.status_code in (200, 202), r.text
     return r.json()
 
@@ -31,6 +32,7 @@ def verdict(stack, name: str, incident_id: str = "inc_0001", sim=None) -> httpx.
     headers = dict(ADMIN)
     if sim:
         headers["X-Sim-Time"] = common.iso(sim)
+        headers["X-Sim-Token"] = common.SIM_TOKEN
     return httpx.post(f"{stack.breaker_url}/incidents/{incident_id}/verdict", headers=headers,
                       json={"incident_id": incident_id, "verdict": name,
                             "reason": "Synthetic test verdict."}, timeout=30)
@@ -147,7 +149,8 @@ def test_admin_call_runs_expiry_on_the_request_clock(stack):
     assert r.status_code == 200 and r.json()["status"] == "rejected"
     assert q(stack, "SELECT decided_by FROM reservations WHERE id = ?", held) == [("admin",)]
     other = q(stack, "SELECT id FROM reservations WHERE status = 'held' ORDER BY id LIMIT 1")[0][0]
-    late = {**ADMIN, "X-Sim-Time": common.iso(NIGHT.replace(hour=3))}
+    late = {**ADMIN, "X-Sim-Time": common.iso(NIGHT.replace(hour=3)),
+            "X-Sim-Token": common.SIM_TOKEN}
     r = httpx.post(f"{stack.breaker_url}/admin/holds/{other}/release", headers=late, timeout=10)
     assert r.status_code == 409 and "rejected" in r.json()["detail"]
     assert q(stack, "SELECT status, decided_by FROM reservations WHERE id = ?", other) == \

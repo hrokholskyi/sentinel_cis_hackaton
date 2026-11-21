@@ -222,7 +222,8 @@ def send_all(plan, trace_path, delay, url=None):
             r = client.post(
                 "/payouts",
                 json=body,
-                headers={"X-API-Key": API_KEY_SECRET, "X-Sim-Time": sim_time},
+                headers={"X-API-Key": API_KEY_SECRET, "X-Sim-Time": sim_time,
+                         "X-Sim-Token": SIM_TOKEN},
             )
             try:
                 data = r.json()
