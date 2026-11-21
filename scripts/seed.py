@@ -65,7 +65,8 @@ def seed_bank(path: str) -> None:
         for d, amount in zip(days, amounts):
             day = first_day + timedelta(days=d)
             basis_id = f"inv_{invoice_no}"
-            bases.append((basis_id, c.CLIENT_ID, ben_id, "invoice", amount, 1, 1))
+            bases.append((basis_id, c.CLIENT_ID, ben_id, "invoice", amount, 1, 1,
+                          c.invoice_description(invoice_no, name, service, day.strftime("%B %Y"))))
             payments.append([None, c.ACCOUNT_ID, ben_id, c.API_KEY_ID, amount,
                              f"Invoice {invoice_no}, {service}, {day.strftime('%B')}", basis_id,
                              at(day, rng.randint(9, 17), rng.randint(0, 59), rng.randint(0, 59))])
@@ -74,11 +75,11 @@ def seed_bank(path: str) -> None:
     # Approved, unused bases for the legit traffic plan.
     for _ts, body in c.LEGIT_PLAN:
         bases.append((body["basis_id"], c.CLIENT_ID, body["beneficiary_id"], "invoice",
-                      body["amount_aed"], 1, 0))
+                      body["amount_aed"], 1, 0, c.LEGIT_BASIS_DESCRIPTIONS[body["basis_id"]]))
 
     # Soft scenario basis (milestone 3), never used by legit traffic.
     bases.append((c.SOFT_BASIS_ID, c.CLIENT_ID, c.SOFT_BENEFICIARY_ID, "invoice",
-                  c.SOFT_AMOUNT_AED, 1, 0))
+                  c.SOFT_AMOUNT_AED, 1, 0, c.SOFT_BASIS_DESCRIPTION))
 
     # New suppliers approved 2 days ago, no payments, one approved basis each (in the plan).
     new_approved = c.DEMO_DATE - timedelta(days=2)
@@ -107,17 +108,19 @@ def seed_bank(path: str) -> None:
         n_iban += 1
         for pd in pay_days:
             basis_id = f"pr_{pd.strftime('%Y_%m')}_{ben_id}"
-            bases.append((basis_id, c.CLIENT_ID, ben_id, "payroll", salary, 1, 1))
+            bases.append((basis_id, c.CLIENT_ID, ben_id, "payroll", salary, 1, 1,
+                          f"Salary {pd.strftime('%B %Y')}, Staff Member {i + 1:02d}"))
             payments.append([None, c.ACCOUNT_ID, ben_id, c.API_KEY_ID, salary,
                              f"Salary {pd.strftime('%B %Y')}", basis_id, at(pd, 9, 0, 2 * i)])
-        bases.append((f"pr_{this_month}_{ben_id}", c.CLIENT_ID, ben_id, "payroll", salary, 1, 0))
+        bases.append((f"pr_{this_month}_{ben_id}", c.CLIENT_ID, ben_id, "payroll", salary, 1, 0,
+                      f"Salary {c.DEMO_DATE.strftime('%B %Y')}, Staff Member {i + 1:02d}"))
 
     payments.sort(key=lambda p: (p[7], p[2]))
     for n, p in enumerate(payments, start=1):
         p[0] = f"pay_{n:06d}"
 
     conn.executemany("INSERT INTO beneficiaries VALUES (?, ?, ?, ?, ?, ?)", bens)
-    conn.executemany("INSERT INTO bases VALUES (?, ?, ?, ?, ?, ?, ?)", bases)
+    conn.executemany("INSERT INTO bases VALUES (?, ?, ?, ?, ?, ?, ?, ?)", bases)
     conn.executemany("INSERT INTO payments VALUES (?, ?, ?, ?, ?, ?, ?, ?)", payments)
     conn.commit()
     conn.close()

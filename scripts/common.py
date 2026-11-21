@@ -81,6 +81,20 @@ def round50(x: float) -> int:
     return int(round(x / 50.0)) * 50
 
 
+def invoice_description(invoice_no: int, name: str, service: str, period: str) -> str:
+    """Text of an approved invoice basis (bank.bases.description)."""
+    return f"Invoice {invoice_no} from {name}: {service}, {period}"
+
+
+# inv_4471 bills the month before DEMO_DATE ("October" in SOFT_PURPOSE).
+SOFT_BASIS_DESCRIPTION = invoice_description(
+    4471, "Falcon Cargo Handling", "logistics services",
+    (DEMO_DATE.replace(day=1) - timedelta(days=1)).strftime("%B %Y"))
+
+# basis_id -> description for the legit plan's bases, filled by _legit_plan().
+LEGIT_BASIS_DESCRIPTIONS: dict = {}
+
+
 def _legit_plan():
     rng = random.Random(LEGIT_RNG_SEED)
     regulars = [r for r in REGULARS if r[0] != SOFT_BENEFICIARY_ID]
@@ -88,9 +102,11 @@ def _legit_plan():
     rng.shuffle(picks)
     items = []
     invoice_no = 3001
-    for ben_id, _name, service, lo, hi, _n in picks:
+    month = LEGIT_DATE.strftime("%B %Y")
+    for ben_id, name, service, lo, hi, _n in picks:
         amount = round50(rng.uniform(lo, min(hi, LEGIT_MAX_AMOUNT)))
         basis_id = f"inv_{invoice_no}"
+        LEGIT_BASIS_DESCRIPTIONS[basis_id] = invoice_description(invoice_no, name, service, month)
         items.append({
             "beneficiary_id": ben_id,
             "amount_aed": amount,
@@ -98,8 +114,10 @@ def _legit_plan():
             "basis_id": basis_id,
         })
         invoice_no += 1
-    for slot, (ben_id, _name, service, amount) in zip(LEGIT_NEW_SUPPLIER_SLOTS, NEW_SUPPLIERS):
+    for slot, (ben_id, name, service, amount) in zip(LEGIT_NEW_SUPPLIER_SLOTS, NEW_SUPPLIERS):
         basis_id = f"inv_{invoice_no}"
+        LEGIT_BASIS_DESCRIPTIONS[basis_id] = invoice_description(invoice_no, name, service,
+                                                                 "first order")
         items.insert(slot, {
             "beneficiary_id": ben_id,
             "amount_aed": amount,

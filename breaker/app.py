@@ -149,6 +149,18 @@ def decide_soft(conn, res, violations: list[engine.Result], now: str) -> bool:
         return False
 
 
+def _jev_warmup_failed(text: str) -> None:
+    conn = connect()
+    try:
+        engine.add_event(conn, now_local(None), "jev", text)
+    finally:
+        conn.close()
+
+
+# Live and shadow mode: open the TLS connection to Jev at start, in the background.
+jev.start_warmup(_jev_warmup_failed)
+
+
 @app.get("/health")
 def health():
     conn = connect()

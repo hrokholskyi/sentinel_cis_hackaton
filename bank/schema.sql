@@ -34,7 +34,8 @@ CREATE TABLE bases (
     type           TEXT NOT NULL CHECK (type IN ('invoice', 'payroll', 'loan')),
     amount_aed     REAL NOT NULL,
     approved       INTEGER NOT NULL DEFAULT 0,
-    used           INTEGER NOT NULL DEFAULT 0
+    used           INTEGER NOT NULL DEFAULT 0,
+    description    TEXT  -- what was approved, in words
 );
 
 -- Executed payments only.

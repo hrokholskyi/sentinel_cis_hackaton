@@ -40,7 +40,13 @@ def test_stub_jev_releases_soft_case(stack):
     state = json.loads(rows[0]["request_json"])["state"]
     assert state["beneficiary"]["prior_payments"] == 14
     assert state["beneficiary"]["max_amount_aed"] == 52000
-    assert state["basis"] == {"type": "invoice", "id": "inv_4471", "amount_aed": 48000, "approved": True}
+    assert state["beneficiary"]["min_amount_aed"] == 30000
+    assert state["beneficiary"]["prior_payments_last_24h"] == 0
+    assert state["beneficiary"]["share_with_approved_basis"] == 1
+    assert state["basis"] == {"type": "invoice", "id": "inv_4471", "amount_aed": 48000, "approved": True,
+                              "already_used": False,
+                              "description": "Invoice 4471 from Falcon Cargo Handling: "
+                                             "logistics services, October 2026"}
     assert any(e["kind"] == "jev" and "released" in e["text"] for e in stack.get("/state")["events"])
 
     # Demo order legit, soft, attack: the attack still leaks exactly 6 and Jev keeps 7 and 8.
@@ -49,6 +55,8 @@ def test_stub_jev_releases_soft_case(stack):
     assert "sent 42 executed 6 held 36" in a.stdout
     rows = jev_rows(stack)
     assert [r["released"] for r in rows] == [1, 0, 0]
+    attack = json.loads(rows[1]["request_json"])["state"]["beneficiary"]
+    assert attack["prior_payments"] == 2 and attack["prior_payments_last_24h"] == 2
 
 
 class SlowJev(BaseHTTPRequestHandler):
@@ -97,6 +105,8 @@ def test_jev_timeout_keeps_hold(stack):
         assert "dummy-key" not in rows[0]["request_json"]
         state = httpx.get(breaker_url + "/state", timeout=5).json()
         assert state["reservations"]["held"] == 1
+        # The start-up warm-up GET hit the fake server (no GET handler): only an event.
+        assert any(e["kind"] == "jev" and "warm-up failed" in e["text"] for e in state["events"])
     finally:
         proc.terminate()
         try:

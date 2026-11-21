@@ -28,6 +28,7 @@ scripts/facts.sh held inc_0001                        # read-only facts for the 
 scripts/infra_check.sh                                # was our own infrastructure changed?
 scripts/replay.sh                                     # replay legit + latest incident on a fresh instance
 scripts/change_request.sh "<description>"             # regenerate rules/rules.lock, add a CHANGELOG.md entry
+.venv/bin/python scripts/jev_eval.py                  # live Jev check of 8 cases (needs TYPESAFE_API_KEY, uses ports 8300/8301)
 ```
 
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
@@ -69,6 +70,26 @@ Hard stops never call Jev.
 Run `traffic_soft.py` after legit and before the attack.
 After the attack the 1 hour sum rule makes the same payment a hard stop.
 `traffic_soft.py --expect held` exits 0 when the payment stays held, for example with `JEV_MODE=live` and a dead `JEV_URL`.
+
+The breaker keeps one `httpx.Client` for its whole life, so Jev calls reuse the TLS connection.
+In `live` and `shadow` mode it opens that connection at start with `GET /v1/models` in a background thread; a failed warm-up only writes a `jev` event.
+
+`scripts/jev_eval.py` checks the live decision on 8 cases and exits 0 only if all pass (2 if `TYPESAFE_API_KEY` is missing).
+It seeds temp databases, drives the real bank and breaker in stub mode through legit, soft and attack traffic, and builds every case with `build_facts`.
+Then it asks Jev `--n` times per case (default 5) and prints the scores (min, median, max), the decision, latency and PASS or FAIL.
+
+| Case | Expected | What |
+|---|---|---|
+| R1 | release | the soft demo case: AED 48,000 to Falcon Cargo Handling, invoice `inv_4471` |
+| H1, H2 | hold | attack payments 7 and 8, exactly as logged in `jev_calls` |
+| H3 | hold | R1 without a basis |
+| H4 | hold | R1 for AED 84,000 (basis says 48,000) |
+| H5 | hold | R1 with purpose "Consulting retainer, Q4" |
+| H6 | hold | attack payment 7 with a prompt injection as purpose |
+| H7 | hold | first payment of AED 48,000 at 14:00 to a new supplier with a matching approved basis |
+
+A release case passes when at least `n - n // 20` calls release it (19 of 20); a hold case passes only when every call holds.
+`--model` compares models, `--cases R1,H5` picks cases, `--dump file.json` writes the facts and makes no API call.
 
 ## Environment variables
 
@@ -202,9 +223,13 @@ After merging a pull request that changes a rule, run the same steps again.
 
 - The SPEC's default `JEV_URL` was wrong.
   The default is the verified direct endpoint `https://api.typesafe.ai/v1/systemone`; `state` is sent as a JSON object, not a string.
-- Variables: `JEV_MODE`, `JEV_URL`, `JEV_MODEL` (`jev-1.13.0`), `JEV_T_HISTORY`, `JEV_T_BASIS`, `JEV_TIMEOUT_S`, `TYPESAFE_API_KEY`.
+- Variables: `JEV_MODE`, `JEV_URL`, `JEV_MODEL` (`jev-1.14.0`), `JEV_T_HISTORY`, `JEV_T_BASIS`, `JEV_TIMEOUT_S`, `TYPESAFE_API_KEY`.
   They are read once at breaker start.
+- The default model is the pinned `jev-1.14.0`, not the `jev-latest` alias, so an alias move cannot change decisions.
+  On the evaluation set both 1.13.0 and 1.14.0 pass, but 1.14.0 separates the cases more clearly (R1 0.98 and 0.99 against 0.94 and 0.98; H5 purpose 0.07 against 0.29).
 - The 1 second timeout is a total: the client waits on a worker thread for at most `JEV_TIMEOUT_S`, and the HTTP call has the same limit per phase.
+  One persistent `httpx.Client` (idle connections kept for 300 seconds instead of the httpx default of 5) and a shared pool of 4 worker threads serve all calls.
+  A cold TLS connection costs about 450 ms against about 250 ms on a warm one, which is why the breaker warms the connection at start.
 - Order: the hold is committed first, Jev runs outside any transaction, and a release goes `released` then `executed` with `decided_by = jev`.
   Any error inside the Jev step (including its logging) keeps the hold and writes an `error` event.
 - Events: kind `jev`, text "Jev released ...", "Jev kept hold ..." or "Jev gave no answer ...".
@@ -212,11 +237,21 @@ After merging a pull request that changes a rule, run the same steps again.
 - `assess(facts, trace=None)` takes an optional dict that it fills with request, response, latency and mode, so the caller can write the `jev_calls` row.
 - Facts are built by `build_facts(conn, res, now)` in `breaker/jev.py`.
   `basis.id` is the stored basis id (`inv_4471`), not the bare number.
-  A basis that is missing or belongs to another beneficiary gives `{"type": null, "id": null, "amount_aed": null, "approved": false}`.
+  They are aggregates and record attributes only, never raw history and never a precomputed verdict.
+  `basis` has `type`, `id`, `description`, `amount_aed`, `approved` and `already_used` (the bank's `used` flag).
+  A basis that is missing or belongs to another beneficiary gives nulls and `approved: false`.
+  `beneficiary` has `name`, `approved_days_ago`, `prior_payments`, `prior_payments_last_24h`, `min_amount_aed`, `median_amount_aed`, `avg_amount_aed`, `max_amount_aed`, `amount_within_prior_range`, `usual_hours`, `first_paid_days_ago`, `last_paid_days_ago` and `share_with_approved_basis` (share of prior payments whose basis is approved).
+  `prior_payments_last_24h` is what tells an attack's "history" (2 payments minutes ago) from a real one.
   `usual_hours` is the earliest prior payment hour to the latest hour plus one (`09-18`).
   `payments_last_hour` counts this key's reservations in the last hour including this one.
   `share_of_balance_last_hour` is the sum reserved in that hour divided by the balance at the start of the hour, rounded to 3 digits.
-  Beneficiary fields with no prior payments are null (`prior_payments` is 0).
+  Beneficiary fields with no prior payments are null (`prior_payments` and `prior_payments_last_24h` are 0).
+- `bank.bases` has a text column `description` (what was approved, such as "Invoice 4471 from Falcon Cargo Handling: logistics services, October 2026"), filled by the seed.
+  Without it the model can only compare the purpose with an id and an amount: `purpose_matches_basis` for R1 rose from about 0.89 to 0.98 with it.
+- An average interval between payments was tried and dropped: with the soft supplier's 31 day pause after a 4.6 day cadence it pulled `fits_history` for R1 down to about 0.88.
+  `first_paid_days_ago`, `last_paid_days_ago` and `prior_payments` still carry the cadence.
+- The two questions keep their ids and meaning and now spell out the yes/no boundary in `criteria`.
+  `fits_history` says that time of day is not part of the question, because layer 1 already held the payment for it and the SPEC question is "by amount and frequency".
 - Shadow mode logs `released = 0` in `jev_calls` even when the thresholds are met.
 - `traffic_soft.py` prints `sent 1 executed N held M` and takes `--expect executed|held`.
 
