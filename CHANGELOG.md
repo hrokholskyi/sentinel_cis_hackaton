@@ -16,3 +16,12 @@
   - f1589d6 Pin incident tests to the six baseline rules, add live-rules tests
   - 4c3f4e7 Rename the product to TrustGap
 - rules/rules.lock: 6 rule files.
+
+## 2026-11-21 - Milestone 6, watcher hardening, wording pass and dashboard polish
+
+- Commits: 561f3d2, 8e3cff8, 9a4806d, 8e4c1a9.
+  - 561f3d2 Watcher: accept only same-repo pull requests, validate API answers
+  - 8e3cff8 Add lazy hold expiry and the probe key state
+  - 9a4806d Tighten the demo narration and the docs
+  - 8e4c1a9 Polish dashboard readability, wording and edge states
+- rules/rules.lock: 6 rule files.
