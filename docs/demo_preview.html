@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Night Circuit Breaker - simulated preview</title>
+<title>TrustGap - simulated preview</title>
 <style>
 :root{
   --bg:#070a11; --bg2:#0a0f19; --panel:#0e1421; --panel2:#131b2c;
@@ -211,7 +211,7 @@ button:focus-visible{outline:2px solid var(--live);outline-offset:2px}
   <header class="top">
     <div class="brand">
       <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="2" y="2" width="36" height="36" rx="9" fill="#0f1b2c" stroke="#56e1ff" stroke-width="2"/><circle cx="12" cy="27" r="3" fill="#56e1ff"/><circle cx="28" cy="27" r="3" fill="#56e1ff"/><path d="M12 27 L25 12" stroke="#e9eef8" stroke-width="3" stroke-linecap="round"/><path d="M28 27 V20" stroke="#56e1ff" stroke-width="2" stroke-linecap="round"/></svg>
-      <div><div class="pname">Night Circuit Breaker</div><div class="psub">in front of the ADCB payments API</div><div class="tag">SIMULATED PREVIEW - fictional scenario, not live data</div></div>
+      <div><div class="pname">TrustGap</div><div class="psub">in front of the ADCB payments API</div><div class="tag">SIMULATED PREVIEW - fictional scenario, not live data</div></div>
     </div>
     <nav class="stepper" id="stepper" aria-label="Demo steps"></nav>
     <div class="ctrls">
@@ -461,7 +461,7 @@ at(5,9500,function(){S.R.closing=true;addEv('replay passed: leak closed','ok');}
 /* ---------- beats and subtitles ---------- */
 function rt(s){return Math.max(2500,s.length*60);}
 var TOURS=[
- {t:'page',title:'The whole page',sub:"This is Night Circuit Breaker. It sits in front of the ADCB payments API and limits money and behaviour, not request counts."},
+ {t:'page',title:'The whole page',sub:"This is TrustGap. It sits in front of the ADCB payments API and limits money and behaviour, not request counts."},
  {t:'layers',title:'Three layers',sub:"Three layers decide. Layer 1: SQL rules, in milliseconds. Layer 2: Jev, a decision model, in under a second. Layer 3: Devin, a coding agent, in minutes."},
  {t:'key',title:'Key state',sub:"The state of one client API key. Here: Microsoft's payout key."},
  {t:'counters',title:'Counters',sub:"Money stopped. Money leaked. Legitimate payments held by mistake, target zero. Payments released by Jev. Time from first violation to pause."},
@@ -631,7 +631,7 @@ function renderCard(B){
   var show=(!B)||B.kind==='explain';
   $('scrim').classList.toggle('on',show);$('card').classList.toggle('on',show);
   once('card',b+':'+show,function(){
-    if(!B)$('card').innerHTML='<div class="ck">in front of the ADCB payments API</div><div class="ct">Night Circuit Breaker</div><div class="cs">A guided tour and five cases, about three minutes.</div><button class="btn primary big" id="bStart">Start tour</button><div class="ch">Space or the right arrow also starts. C shows or hides subtitles.</div>';
+    if(!B)$('card').innerHTML='<div class="ck">in front of the ADCB payments API</div><div class="ct">TrustGap</div><div class="cs">A guided tour and five cases, about three minutes.</div><button class="btn primary big" id="bStart">Start tour</button><div class="ch">Space or the right arrow also starts. C shows or hides subtitles.</div>';
     else if(B.kind==='explain')$('card').innerHTML='<div class="cn">Case '+B.c+'</div><div class="ct">'+esc(CASES[B.c].name)+'</div>';
     var s=$('bStart');if(s)s.addEventListener('click',function(e){next();if(e.detail)s.blur();});
   });

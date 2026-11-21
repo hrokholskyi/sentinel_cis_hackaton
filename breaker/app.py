@@ -1,4 +1,4 @@
-"""Night circuit breaker: a proxy in front of the bank payment API.
+"""TrustGap: a proxy in front of the bank payment API.
 
 Pipeline for one payout (SPEC section 6):
 1. Authenticate the key against bank.db.
@@ -41,7 +41,7 @@ RULE_CONFIG = {"soft_min_amount_aed": SOFT_MIN_AMOUNT_AED}
 
 RULES = engine.load_rules(RULES_DIR)
 
-app = FastAPI(title="Night circuit breaker")
+app = FastAPI(title="TrustGap")
 
 
 class Payout(BaseModel):

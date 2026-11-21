@@ -110,7 +110,7 @@ def is_loopback(url: str) -> bool:
 class GitHub:
     def __init__(self, base_url: str, repo: str, token: Optional[str], deadline: float):
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-                   "User-Agent": "night-breaker-watch-pr"}
+                   "User-Agent": "trustgap-watch-pr"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.client = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=30,

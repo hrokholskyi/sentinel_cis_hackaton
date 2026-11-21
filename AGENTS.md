@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-Night Circuit Breaker: a rate limiter in front of a toy bank payment API.
+TrustGap: a rate limiter in front of a toy bank payment API.
 It counts money and client behaviour, not requests, and puts suspicious payments on a reversible hold.
 All data is synthetic.
 `SPEC.md` is the full spec, `docs/devin_prompt.md` is your task prompt.

@@ -1,8 +1,10 @@
-# Night Circuit Breaker
+# TrustGap
 
 A smart rate limiter in front of a toy bank payment API.
 It counts money and client behaviour, not requests, and puts suspicious payments on a reversible hold.
 `SPEC.md` is the build spec.
+The spec calls the product by its working name, Night Circuit Breaker.
+`docs/demo_preview.html` is a simulated walk-through of the demo that needs no services.
 
 The bank is shown as ADCB and the client as Microsoft for illustration only.
 The scenario is fictional.

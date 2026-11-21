@@ -24,7 +24,7 @@ def test_dashboard_page_is_served(stack):
     r = httpx.get(stack.breaker_url + "/", timeout=5)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
-    assert "Night Circuit Breaker" in r.text and "/state" in r.text
+    assert "TrustGap" in r.text and "/state" in r.text
     assert "\u2014" not in r.text  # no em dash anywhere on the page
     for cdn in ("http://", "https://"):
         assert f'src="{cdn}' not in r.text and f'href="{cdn}' not in r.text

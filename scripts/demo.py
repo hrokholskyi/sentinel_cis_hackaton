@@ -216,7 +216,7 @@ class Runner:
         bank = s["bank_name"]
         client = (s.get("client") or {}).get("name") or "the client"
         stops = [
-            ("all", f"This is Night Circuit Breaker. It sits in front of the {bank} payments API "
+            ("all", f"This is TrustGap. It sits in front of the {bank} payments API "
                     "and limits money and behaviour, not request counts."),
             ("layers", "Three layers decide. Layer 1: SQL rules, in milliseconds. Layer 2: Jev, "
                        "a decision model, in under a second. Layer 3: Devin, a coding agent, "
