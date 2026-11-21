@@ -57,6 +57,10 @@ All data is synthetic.
   A broken rule holds every payment, so replay before you push.
 - A regression test in a new file under `tests/`, using `scripts/replaylib.py`. `rules/README.md` has an example.
   Always replay `fixtures/legit.jsonl` before the attack trace.
+  Start the stack with the full live `rules/` folder, which is the default of `replaylib.start(tmp_path)`, so your new rule is loaded.
+- The existing incident tests run on a pinned baseline of the six original rules, copied by `baseline_rules_dir()` in `tests/conftest.py` (used by the `stack` and `make_stack` fixtures).
+  So a new rule file does not change them, and they must keep passing unchanged.
+  Do not use the `stack` or `make_stack` fixtures for your regression test, because they do not load your rule. Use `replaylib.start(tmp_path)`, or `make_stack(rules_dir=replaylib.ROOT / "rules")`.
 - Pass criteria and the pull request contents are in `docs/devin_prompt.md`.
 
 ## Hard rules

@@ -148,6 +148,8 @@ def test_inc_0001_is_fully_held(tmp_path):
 ```
 
 `replaylib.replay()` returns a result with `sent`, `executed`, `held`, `rejected` and `lines` (one dict per request with its `status` and `reservation_id`).
+`replaylib.start(tmp_path)` loads the live `rules/` folder, so the example uses your new rule.
+The `stack` and `make_stack` fixtures of `tests/conftest.py` run on a pinned baseline of the six original rules instead, so do not use them for this test.
 Inside the `with` block, `stack.get("/state")` returns the breaker state and `stack.env["BREAKER_DB"]` is the path of the temp breaker database, if you want to check which rule held a payment.
 Always replay `fixtures/legit.jsonl` before an attack trace: once the attack pauses the key, every later payment of that key is held.
 

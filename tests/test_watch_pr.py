@@ -11,11 +11,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 
 import replaylib
+from conftest import BASELINE_RULE_FILES
 
 REPO = "acme/demo"
 PR_URL = f"https://github.com/{REPO}/pull/7"
 SCRIPT = replaylib.ROOT / "scripts" / "watch_pr.py"
-RULES = sorted((replaylib.ROOT / "rules").glob("*.sql"))
+RULES = [replaylib.ROOT / "rules" / name for name in BASELINE_RULE_FILES]  # pinned, not the live folder
 NEW_RULE = b"-- id: new_rule\n-- level: hard\nSELECT 0 AS violated, 'x' AS detail;\n"
 SHA = "a" * 40
 

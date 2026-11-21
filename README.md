@@ -301,6 +301,8 @@ After merging a pull request that changes a rule, run the same steps again.
 - All timestamps are stored as Gulf time (UTC+4, no DST) naive strings `YYYY-MM-DD HH:MM:SS`, so SQLite `datetime()` works on them.
   With `DEMO_MODE=1` (the default, so the plain run commands work) both services take "now" from `X-Sim-Time`; the breaker forwards that header to the bank.
   Without the header they use the real Gulf time.
+- Tests about the historic incident run on a pinned baseline of the six original rule files (`baseline_rules_dir()` in `tests/conftest.py`), so adding a rule to `rules/` does not change them.
+  Only a few tests use the live `rules/` folder: every rule loads, and the legit trace is fully executed.
 - The seed is fully deterministic (fixed random seeds, fixed ids).
   Ids and the legit traffic plan live in `scripts/common.py`, shared by the seed and the traffic scripts.
 - Legit plan: 40 invoice payments to 11 regular suppliers plus the first payments to the 2 new suppliers (AED 3,200 and 4,750), one every 13 minutes from 09:00 to 17:53.
