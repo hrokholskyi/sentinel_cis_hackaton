@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import replaylib  # noqa: E402
+from replaylib import PYTHON, free_port, wait_healthy  # noqa: E402,F401  (used by test modules)
 
 
 @pytest.fixture
