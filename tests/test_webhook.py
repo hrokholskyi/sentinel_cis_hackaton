@@ -90,6 +90,16 @@ def test_webhook_body(make_stack, receiver):
         "SELECT COUNT(*), COALESCE(SUM(released), 0) FROM jev_calls").fetchone()
     conn.close()
     expected_samples = [json.loads(x) for x in INCIDENT_TRACE.read_text().splitlines()[:9]]
+    samples = body.pop("sample_requests")
+    assert len(samples) == len(expected_samples)
+    conn = sqlite3.connect(stack.env["BREAKER_DB"])
+    known_ids = {r[0] for r in conn.execute("SELECT id FROM reservations")}
+    conn.close()
+    # Reservation ids depend on what ran before (the fixture was recorded in demo order).
+    for got, want in zip(samples, expected_samples):
+        assert got.pop("reservation_id") in known_ids
+        want.pop("reservation_id", None)
+        assert got == want
     assert body == {
         "event": "breaker.tripped",
         "incident_id": "inc_0001",
@@ -103,7 +113,6 @@ def test_webhook_body(make_stack, receiver):
         "leaked_count": 6,
         "jev": {"model": "jev-1.13.0", "asked": asked, "released": released},
         "trace_file": str(stack.workdir / "incidents" / "inc_0001.jsonl"),
-        "sample_requests": expected_samples,
     }
     assert wait_for(lambda: events(stack, "webhook for inc_0001 sent"))
 

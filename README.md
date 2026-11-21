@@ -174,7 +174,8 @@ Keys in the terminal:
 
 When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --timeout-min 30` if that script exists; its log is `.state/demo/watch_pr.log`.
 Case 5 replays against `rules_dir` from `.state/pr/latest.json`; without it the runner shows only the "before" table and says the fix is not available yet.
-Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--url`.
+Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--before-rules DIR`, `--url`.
+`--before-rules DIR` sets the rules folder of the "before" replay in case 5 (default: the repo `rules/` folder, which is right on stage; tests pass the baseline folder).
 
 ## Environment variables
 
@@ -303,6 +304,7 @@ After merging a pull request that changes a rule, run the same steps again.
   Without the header they use the real Gulf time.
 - Tests about the historic incident run on a pinned baseline of the six original rule files (`baseline_rules_dir()` in `tests/conftest.py`), so adding a rule to `rules/` does not change them.
   Only a few tests use the live `rules/` folder: every rule loads, and the legit trace is fully executed.
+- A demo caption that depends on a Jev answer waits up to 3 seconds for the Jev call to show in `/state` (the breaker commits the hold before it calls Jev); only if none appears does it say Jev gave no answer.
 - The seed is fully deterministic (fixed random seeds, fixed ids).
   Ids and the legit traffic plan live in `scripts/common.py`, shared by the seed and the traffic scripts.
 - Legit plan: 40 invoice payments to 11 regular suppliers plus the first payments to the 2 new suppliers (AED 3,200 and 4,750), one every 13 minutes from 09:00 to 17:53.

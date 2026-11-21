@@ -81,6 +81,8 @@ class Runner:
         self.step_done: list[int] = []
         self.paused_pids: set[int] = set()
         self.watcher_missing_noted = False
+        self.before_rules: Optional[Path] = (Path(args.before_rules).resolve()
+                                             if args.before_rules else None)
 
     # --- HTTP -----------------------------------------------------------------
 
@@ -130,6 +132,17 @@ class Runner:
             time.sleep(poll)
             s = self.state()
         return s
+
+    def wait_jev_call(self, jev0, timeout: float = 3.0) -> Optional[dict]:
+        """Wait until /state shows a Jev call newer than jev0; None if none appears in time.
+
+        The breaker commits the hold first and logs the Jev call afterwards, so a caption
+        about Jev's answer must wait for the call to be visible.
+        """
+        s = self.wait_for(lambda x: (x["layers"]["layer2"]["last"] or {}).get("id") != jev0,
+                          timeout)
+        j = s["layers"]["layer2"]["last"] or {}
+        return j if j.get("id") != jev0 else None
 
     # --- child processes ------------------------------------------------------
 
@@ -292,10 +305,13 @@ class Runner:
                 p.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 pass
+            j = self.wait_jev_call(jev0)
             l2 = self.state()["layers"]["layer2"]
-            j = l2["last"] or {}
             t = min(l2["t_history"], l2["t_basis"])
-            if j.get("outcome") == "released":
+            if j is None:
+                self.say("Jev gave no answer, the payment stays on hold: fail closed.",
+                         spotlight="layer2")
+            elif j.get("outcome") == "released":
                 self.say(f"Both are above {t:.2f}, so the breaker releases the payment. "
                          "The thresholds live in our code, not in the model.", spotlight="layer2")
                 lat = j.get("latency_ms") or 0
@@ -340,9 +356,10 @@ class Runner:
                      " in total, below every threshold. They pass.", spotlight="stream")
         soft = [r for r in rows if r["level"] == "soft"]
         if soft:
-            j = s["layers"]["layer2"]["last"] or {}
-            if j.get("id") == jev0:
-                jtext = "Jev was not asked."
+            j = self.wait_jev_call(jev0)
+            s = self.state()
+            if j is None:
+                jtext = "Jev gave no answer. The payments stay on hold: fail closed."
             elif j.get("outcome") == "kept":
                 jtext = "Jev says this does not fit the history. The payments stay on hold."
             elif j.get("outcome") == "no_answer":
@@ -540,7 +557,7 @@ class Runner:
                      spotlight="stream",
                      panel={"title": title, "text": "Before, rules in the repository:\n\n"
                                                     "running ..."})
-        before, btext = self.replay(None)
+        before, btext = self.replay(self.before_rules)
         text = "Before, rules in the repository:\n" + btext
         self.present(panel={"title": title, "text": text})
         if before:
@@ -606,6 +623,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--attack-delay", type=float, default=0.25, help="seconds between attack payments")
     ap.add_argument("--no-hold", action="store_true",
                     help="never pause the attack script while a caption is read")
+    ap.add_argument("--before-rules", metavar="DIR",
+                    help="rules folder for the 'before' replay in case 5 (default: rules/)")
     ap.add_argument("--url", help="breaker URL (default: BREAKER_URL or http://127.0.0.1:8000)")
     ap.add_argument("--no-watcher", action="store_true", help="never start scripts/watch_pr.py")
     ap.add_argument("--watcher", default=str(WATCHER),

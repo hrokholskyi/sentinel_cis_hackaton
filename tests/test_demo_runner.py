@@ -4,10 +4,33 @@ import json
 import subprocess
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
 
-from conftest import PYTHON, ROOT
+from conftest import PYTHON, ROOT, baseline_rules_dir
+
+JEV_APPROVED = "The burst starts. Soft stop. Jev says this does not fit the history. " \
+               "The payments stay on hold."
+
+
+class LowScoreJev(BaseHTTPRequestHandler):
+    """A fake TypeSafe endpoint: low scores, after a delay (the live answer takes ~250 ms)."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        time.sleep(0.4)
+        body = json.dumps({"answers": {"fits_history": {"type": "noul", "noul": 0.02},
+                                       "purpose_matches_basis": {"type": "noul", "noul": 0.01}}})
+        try:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except OSError:
+            pass
+
+    def log_message(self, *args):
+        pass
 
 
 def watch_presenter(url, seen, stop):
@@ -23,16 +46,47 @@ def watch_presenter(url, seen, stop):
             time.sleep(0.05)
 
 
+def run_runner(stack, tmp_path, *extra):
+    return subprocess.run(
+        [PYTHON, str(ROOT / "scripts" / "demo.py"), "--auto", "--pace", "0.02",
+         "--legit-delay", "0", "--attack-delay", "0.02", "--no-watcher",
+         "--before-rules", str(baseline_rules_dir(tmp_path / "before_rules")),
+         "--pr-state", str(tmp_path / "missing.json"), "--url", stack.breaker_url, *extra],
+        cwd=ROOT, env=stack.env, capture_output=True, text=True, timeout=300)
+
+
+def test_case3_caption_waits_for_slow_jev(make_stack, tmp_path):
+    """The hold is committed before Jev is called: the caption must not say Jev was not asked."""
+    server = HTTPServer(("127.0.0.1", 0), LowScoreJev)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        stack = make_stack(env={"JEV_MODE": "live", "TYPESAFE_API_KEY": "dummy-key",
+                                "JEV_URL": f"http://127.0.0.1:{server.server_port}/v1/systemone"})
+        seen, stop = [], threading.Event()
+        t = threading.Thread(target=watch_presenter, args=(stack.breaker_url, seen, stop))
+        t.start()
+        try:
+            r = run_runner(stack, tmp_path, "--no-tour")
+        finally:
+            stop.set()
+            t.join()
+        assert r.returncode == 0, r.stdout + r.stderr
+        captions = [p["caption"] for p in seen if p["caption"]]
+        assert JEV_APPROVED in captions
+        assert not any("Jev was not asked" in c or "Jev gave no answer" in c for c in captions)
+    finally:
+        server.shutdown()
+        server.server_close()
+        for name in ("legit", "soft", "attack"):
+            (ROOT / "traces" / f"demo_{name}.jsonl").unlink(missing_ok=True)
+
+
 def test_demo_runner_auto_completes_all_cases(stack, tmp_path):
     seen, stop = [], threading.Event()
     t = threading.Thread(target=watch_presenter, args=(stack.breaker_url, seen, stop))
     t.start()
     try:
-        r = subprocess.run(
-            [PYTHON, str(ROOT / "scripts" / "demo.py"), "--auto", "--pace", "0.02",
-             "--legit-delay", "0", "--attack-delay", "0.02", "--no-watcher",
-             "--pr-state", str(tmp_path / "missing.json"), "--url", stack.breaker_url],
-            cwd=ROOT, env=stack.env, capture_output=True, text=True, timeout=300)
+        r = run_runner(stack, tmp_path)
     finally:
         stop.set()
         t.join()
