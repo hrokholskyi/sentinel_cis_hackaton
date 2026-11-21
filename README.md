@@ -21,6 +21,7 @@ Run everything with `.venv/bin/python` (or activate the venv).
 .venv/bin/uvicorn bank.app:app --port 8001            # toy bank
 .venv/bin/uvicorn breaker.app:app --port 8000         # breaker, clients only talk to this
 .venv/bin/python scripts/traffic_legit.py             # 42 daytime payments, expect 42 executed
+.venv/bin/python scripts/traffic_soft.py              # 02:10 soft case, run before the attack, expect executed (Jev releases)
 .venv/bin/python scripts/traffic_attack.py            # 02:00 attack, expect 6 executed, 36 held
 ```
 
@@ -49,6 +50,20 @@ Tests start both services on free ports against temp databases:
 ```sh
 .venv/bin/python -m pytest -q
 ```
+
+## Layer 2: Jev
+
+A payment with only soft violations goes to Jev (`breaker/jev.py`) after its hold is committed.
+`JEV_MODE=stub` (default) needs no network and is deterministic.
+`live` calls `POST $JEV_URL` (default `https://api.typesafe.ai/v1/systemone`) with `Authorization: Bearer $TYPESAFE_API_KEY`, and may release.
+`shadow` calls the API and logs the answer but never releases.
+The breaker releases only if `fits_history >= JEV_T_HISTORY` and `purpose_matches_basis >= JEV_T_BASIS` (both default 0.9).
+Timeout (`JEV_TIMEOUT_S`, 1 second total, no retry), connection error, non-200, malformed answer or a missing API key: the hold stays.
+Every call is logged in `jev_calls` (request, response, latency, released, mode), and the API key is never stored.
+Hard stops never call Jev.
+Run `traffic_soft.py` after legit and before the attack.
+After the attack the 1 hour sum rule makes the same payment a hard stop.
+`traffic_soft.py --expect held` exits 0 when the payment stays held, for example with `JEV_MODE=live` and a dead `JEV_URL`.
 
 ## Environment variables
 
@@ -111,6 +126,28 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
 - `drain_1h` compares the sum reserved in the last hour with 30% of the balance at the start of that hour, taken as the current balance plus payments executed in the window.
 - `off_hours_amount` treats 07:00:00 to 20:00:00 inclusive as business hours.
 - There is deliberately no rule for dormant beneficiaries (SPEC section 6).
+
+### Jev
+
+- The SPEC's default `JEV_URL` was wrong.
+  The default is the verified direct endpoint `https://api.typesafe.ai/v1/systemone`; `state` is sent as a JSON object, not a string.
+- Variables: `JEV_MODE`, `JEV_URL`, `JEV_MODEL` (`jev-1.13.0`), `JEV_T_HISTORY`, `JEV_T_BASIS`, `JEV_TIMEOUT_S`, `TYPESAFE_API_KEY`.
+  They are read once at breaker start.
+- The 1 second timeout is a total: the client waits on a worker thread for at most `JEV_TIMEOUT_S`, and the HTTP call has the same limit per phase.
+- Order: the hold is committed first, Jev runs outside any transaction, and a release goes `released` then `executed` with `decided_by = jev`.
+  Any error inside the Jev step (including its logging) keeps the hold and writes an `error` event.
+- Events: kind `jev`, text "Jev released ...", "Jev kept hold ..." or "Jev gave no answer ...".
+  On a kept hold the existing "client asked to confirm payment" event is still written.
+- `assess(facts, trace=None)` takes an optional dict that it fills with request, response, latency and mode, so the caller can write the `jev_calls` row.
+- Facts are built by `build_facts(conn, res, now)` in `breaker/jev.py`.
+  `basis.id` is the stored basis id (`inv_4471`), not the bare number.
+  A basis that is missing or belongs to another beneficiary gives `{"type": null, "id": null, "amount_aed": null, "approved": false}`.
+  `usual_hours` is the earliest prior payment hour to the latest hour plus one (`09-18`).
+  `payments_last_hour` counts this key's reservations in the last hour including this one.
+  `share_of_balance_last_hour` is the sum reserved in that hour divided by the balance at the start of the hour, rounded to 3 digits.
+  Beneficiary fields with no prior payments are null (`prior_payments` is 0).
+- Shadow mode logs `released = 0` in `jev_calls` even when the thresholds are met.
+- `traffic_soft.py` prints `sent 1 executed N held M` and takes `--expect executed|held`.
 
 ### Holds, pause and incidents
 

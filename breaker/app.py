@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from breaker import engine, incidents
+from breaker import engine, incidents, jev
 
 GULF = timezone(timedelta(hours=4))  # Asia/Dubai, no DST
 
@@ -118,10 +118,34 @@ def forward(conn, res, secret: str, sim_time: Optional[str], now: str,
 def decide_soft(conn, res, violations: list[engine.Result], now: str) -> bool:
     """Decision for a payment with only soft violations: True releases it, False keeps the hold.
 
-    This is the single place where layer 2 (Jev, milestone 3) plugs in.
-    Until then every soft stop stays held (fail closed).
+    Layer 2 (Jev). Runs after the hold is committed, outside any transaction.
+    Any failure in Jev or in its logging keeps the hold (fail closed).
     """
-    return False
+    try:
+        trace: dict = {}
+        result = jev.assess(jev.build_facts(conn, res, now), trace)
+        released = bool(result and result.released)
+        conn.execute(
+            "INSERT INTO jev_calls (reservation_id, request_json, response_json, latency_ms,"
+            " released, mode) VALUES (?, ?, ?, ?, ?, ?)",
+            (res["id"], trace.get("request_json"), trace.get("response_json"),
+             trace.get("latency_ms"), int(released), trace.get("mode")))
+        if released:
+            engine.add_event(conn, now, "jev",
+                             f"Jev released {res['id']}: fits_history {result.fits_history:.2f}, "
+                             f"purpose_matches_basis {result.purpose_matches_basis:.2f}")
+        elif result is None:
+            engine.add_event(conn, now, "jev",
+                             f"Jev gave no answer for {res['id']} ({trace.get('mode')}), hold kept")
+        else:
+            engine.add_event(conn, now, "jev",
+                             f"Jev kept hold {res['id']} ({result.mode}): fits_history "
+                             f"{result.fits_history:.2f}, purpose_matches_basis "
+                             f"{result.purpose_matches_basis:.2f}")
+        return released
+    except Exception as e:
+        engine.add_event(conn, now, "error", f"Jev step failed for {res['id']}: {e}")
+        return False
 
 
 @app.get("/health")
