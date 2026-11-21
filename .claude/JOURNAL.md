@@ -226,3 +226,13 @@ Roman asked for a README that also presents the product.
 Decision: the old README moves unchanged to `docs/REFERENCE.md`, and a new short `README.md` carries the pitch, the three layers, the measured results, real screenshots, a GIF and a two-minute quick start.
 The move is byte-identical apart from forced link fixes, because the stage-fix agent is editing README sections in parallel and its diff must be re-applied to the moved file.
 Rejected: waiting for the stage fixes before starting, because it would cost about 20 minutes of idle time.
+
+## 2026-11-21 - First successful Devin run: pull request in 9 minutes 25 seconds
+Session started through the API at 12:00:43 UTC; Devin's first message came after 2.2 minutes; PR #1 opened at 12:10:08 UTC by `devin-ai-integration[bot]` on branch `devin/1795262707-inc-0001-dormant-beneficiary`.
+The PR holds exactly what the prompt asks for: `verdict.json`, `reports/inc_0001.md`, one new rule `rules/07_dormant_beneficiary_no_basis.sql` (hard) and a regression test; Devin reports 90 tests passing.
+Verdict: `escalate_bank_security`, not `contact_client` as the simulated preview assumed; infra check was clean, the reason names a stolen-key or insider pattern.
+Verified by the main agent: `scripts/replay.sh --rules-dir .state/pr/1/rules` gives attack 42 / 0 / 42 PASS and legit 42 / 42 / 0 PASS.
+The report has a section "Code paths that reach the bank payout (graphify graph.json)" that lists the callers of `forward()`, so the Graphify graph was really used.
+The watcher applied the verdict to the live breaker; the artifacts are backed up in `.state/pr.backup-rehearsal` and `.state/pr/rehearsal.json` for the stage fallback.
+The PR must stay open and unmerged: merging it would close the gap that case 3 of the demo shows.
+The dashboard's "pause to PR" shows 52 minutes for this run, because the stack was paused by the earlier failed rehearsal; the true Devin time is 9 min 25 s.
