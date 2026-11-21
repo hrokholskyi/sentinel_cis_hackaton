@@ -1,0 +1,12 @@
+{
+  "name": "trustgap-demo-video",
+  "private": true,
+  "description": "Deterministic frame-by-frame renderer for docs/demo_preview.html",
+  "type": "commonjs",
+  "scripts": {
+    "render": "node render.js"
+  },
+  "dependencies": {
+    "playwright-core": "1.64.1"
+  }
+}
