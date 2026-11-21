@@ -1,0 +1,18 @@
+{
+  "incident_id": "inc_0001",
+  "verdict": "release",
+  "reason": "Monthly payroll run on the 25th at 09:00, like every month in the history. All 30 employees have salary history and an approved November payroll basis of the exact amount. The burst rule fired on volume only.",
+  "evidence": {
+    "basis_ids": [
+      "pr_2026_11_ben_emp_09", "pr_2026_11_ben_emp_10", "pr_2026_11_ben_emp_11",
+      "pr_2026_11_ben_emp_12", "pr_2026_11_ben_emp_13", "pr_2026_11_ben_emp_14",
+      "pr_2026_11_ben_emp_15", "pr_2026_11_ben_emp_16", "pr_2026_11_ben_emp_17",
+      "pr_2026_11_ben_emp_18", "pr_2026_11_ben_emp_19", "pr_2026_11_ben_emp_20",
+      "pr_2026_11_ben_emp_21", "pr_2026_11_ben_emp_22", "pr_2026_11_ben_emp_23",
+      "pr_2026_11_ben_emp_24", "pr_2026_11_ben_emp_25", "pr_2026_11_ben_emp_26",
+      "pr_2026_11_ben_emp_27", "pr_2026_11_ben_emp_28", "pr_2026_11_ben_emp_29",
+      "pr_2026_11_ben_emp_30"
+    ],
+    "prior_payment_ids": []
+  }
+}

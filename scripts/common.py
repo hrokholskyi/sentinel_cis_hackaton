@@ -171,6 +171,31 @@ def _attack_plan():
 
 ATTACK_PLAN = _attack_plan()
 
+# Payroll scenario (milestone 6): the 25th of DEMO_DATE's month at 09:00, the same day and
+# time as the salary runs in the seeded history, one payment every 2 seconds.
+PAYROLL_DATE = DEMO_DATE.replace(day=25)
+PAYROLL_START = "09:00:00"
+PAYROLL_SPACING_S = 2
+PAYROLL_MONTH = DEMO_DATE.strftime("%Y_%m")
+
+
+def payroll_basis_id(ben_id: str) -> str:
+    """This month's approved payroll basis of an employee, as seeded."""
+    return f"pr_{PAYROLL_MONTH}_{ben_id}"
+
+
+def payroll_plan(salaries: dict):
+    """30 salary payments, employee 01 to 30. salaries maps beneficiary id -> amount."""
+    start = datetime.combine(PAYROLL_DATE, datetime.strptime(PAYROLL_START, "%H:%M:%S").time())
+    month = PAYROLL_DATE.strftime("%B %Y")
+    return [(start + timedelta(seconds=PAYROLL_SPACING_S * i), {
+        "account_id": ACCOUNT_ID,
+        "beneficiary_id": ben_id,
+        "amount_aed": salaries[ben_id],
+        "purpose": f"Salary {month}",
+        "basis_id": payroll_basis_id(ben_id),
+    }) for i, ben_id in enumerate(EMPLOYEE_IDS)]
+
 
 def send_all(plan, trace_path, delay, url=None):
     """POST every planned payout to the breaker and write the JSONL trace.

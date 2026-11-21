@@ -29,6 +29,8 @@ Run everything with `.venv/bin/python` (or activate the venv).
 .venv/bin/python scripts/traffic_legit.py             # 42 daytime payments, expect 42 executed
 .venv/bin/python scripts/traffic_soft.py              # 02:10 soft case, run before the attack, expect executed (Jev releases)
 .venv/bin/python scripts/traffic_attack.py            # 02:00 attack, expect 6 executed, 36 held
+.venv/bin/python scripts/traffic_payroll.py           # payroll on the 25th at 09:00, fresh seed, expect 8 executed, 22 held
+scripts/apply_verdict.sh inc_0001 fixtures/verdicts/payroll_release.json   # release the payroll burst, expect 30 of 30 executed
 scripts/apply_verdict.sh inc_0001 verdict.json        # send a verdict to the breaker
 scripts/facts.sh held inc_0001                        # read-only facts for the investigator
 scripts/infra_check.sh                                # was our own infrastructure changed?
@@ -179,6 +181,75 @@ When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped
 Case 5 replays against `rules_dir` from `.state/pr/latest.json`; without it the runner shows only the "before" table and says the fix is not available yet.
 Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--before-rules DIR`, `--url`.
 `--before-rules DIR` sets the rules folder of the "before" replay in case 5 (default: the repo `rules/` folder, which is right on stage; tests pass the baseline folder).
+
+## Milestone 6: probe, expiry, payroll
+
+### Payroll scenario
+
+```sh
+.venv/bin/python scripts/seed.py
+INCIDENTS_DIR=traces/incidents .venv/bin/uvicorn breaker.app:app --port 8000   # keeps fixtures/incidents/ clean
+.venv/bin/python scripts/traffic_payroll.py
+scripts/apply_verdict.sh inc_0001 fixtures/verdicts/payroll_release.json
+```
+
+`traffic_payroll.py` sends 30 salary payments to `ben_emp_01` .. `ben_emp_30` on 2026-11-25 (the 25th of `DEMO_DATE`'s month) from 09:00:00 to 09:00:58, one every 2 seconds.
+Each one carries the employee's approved payroll basis for this month (`pr_2026_11_ben_emp_NN`) with the exact salary.
+The salaries are the client's payroll file: the script reads them from those bases in `BANK_DB` (read-only, `--bank-db` overrides).
+Flags as in the other traffic scripts: `--delay` (default 0.1), `--trace` (default `traces/payroll.jsonl`), `--url`.
+
+Expected outcome, checked by the script (exit 1 otherwise):
+
+| Payments | Time | Outcome |
+|---|---|---|
+| 1-8 (`ben_emp_01` .. `ben_emp_08`) | 09:00:00 to 09:00:14 | executed, no rule fires |
+| 9 (`ben_emp_09`) | 09:00:16 | held, `hard_stop`, `burst_count_5m` (9 reservations in 5 minutes), key paused, `inc_0001` opens |
+| 10-30 | 09:00:18 to 09:00:58 | held, `key_paused` |
+
+So 8 executed, 22 held.
+No other rule fires: 09:00 is business hours, each salary equals the prior salaries, the first 8 sum to AED 84,300.
+The script prints the open incident id and the `apply_verdict.sh` command.
+`fixtures/verdicts/payroll_release.json` is the example verdict: `release` for `inc_0001`, with the 22 held basis ids as evidence.
+The breaker re-checks each held payment (salary history, approved unused basis of the same amount) and sends all 22: 30 of 30 executed, key `normal`, incident `closed`.
+
+### Hold expiry
+
+A hold has a time limit, `HOLD_TTL_MIN` (default 30).
+Expiry is lazy and runs on the request clock only: when a payout for the key arrives, and when a verdict or an admin call for that key, incident or hold is processed.
+Never on a timer, never on wall-clock time, never on `GET /state`.
+
+- The holds of an open incident share one deadline: the latest of them plus `HOLD_TTL_MIN`, or the incident's `hold_until` from a `hold_until_morning` verdict if that is later.
+  A request with a request time strictly later than the deadline rejects all of them (`status = rejected`, `decided_by = expiry`), with one `expiry` event per payment and one for the incident.
+  They are never sent.
+  The incident gets `status = expired` and a paused key moves to `probe`.
+- Any other hold (a soft stop with no incident, a probe hold) expires on its own, `HOLD_TTL_MIN` after it was created, and the key state does not change.
+- A verdict for an expired incident answers 409 "incident is expired".
+  An admin release or reject of an expired hold answers 409 "reservation is rejected, not held".
+- Admin calls and verdicts without `X-Sim-Time` use the key's latest request time as "now", so they never expire anything a request would not have expired.
+
+In the main demo nothing expires: the attack holds are from 02:03:00 to 02:04:10, the latest request is the soft payment at 02:10, and verdicts without `X-Sim-Time` run at 02:10.
+After `hold_until_morning` they last until 08:00.
+Without it, the first payout of the key after 02:34:10 expires the 36 holds and the key moves to `probe`.
+
+### Probe
+
+A key in `probe` evaluates the rules as usual, then the probe gate: the beneficiary needs a bank payment before now and the amount must be at most `PROBE_MAX_AMOUNT_AED` (default 1000).
+A payment that fails the gate is held with `reason = probe` in the 202 response, `rule_id = probe`, `level = hard`, and the reason in `detail`.
+A hard rule violation pauses the key again and opens a new incident (`inc_0002`, ...), before the gate.
+Soft violations that pass the gate take the normal Jev path.
+A payment with no violation that the bank executes is clean (`decided_by = probe`); after `PROBE_CLEAN_PAYMENTS` (default 5) clean payments the key returns to `normal`.
+The count is `key_state.probe_clean` in `breaker.db`, so it survives a breaker restart; every state change resets it.
+
+### What `GET /state` shows
+
+- `key.state` is `normal`, `paused` or `probe`; `key` also has `probe_clean` and `probe_target`.
+  In `probe`, `key.incident_id` is the expired incident.
+- `counters.stopped` counts `held` only, so an expired payment is not stopped any more.
+- `counters.expired` is new: holds rejected by expiry, count and AED sum.
+- `counters.leaked` no longer counts the payments before an incident that a full `release` verdict closed: that traffic was legitimate (the payroll burst).
+- `incident.expired_count` is the number of the incident's holds rejected by expiry.
+- `layers.layer1.result` is `probe` when the latest reservation was held by the probe gate.
+- Holds past their deadline stay `held` in `/state` until the next request for the key arrives.
 
 ## Environment variables
 
@@ -455,6 +526,22 @@ After merging a pull request that changes a rule, run the same steps again.
 - In `--auto` mode case 4 ends when no PR watcher is running, with the caption "No pull request yet".
 - The fallback copies the rehearsal verdict to a temp file with the current incident id (and the PR URL from `latest.json` if the verdict has none) before `apply_verdict.sh` sends it.
   It stops its services through a pid file and a shell `trap`, and Python stops them too.
+
+### Milestone 6: probe, expiry, payroll
+
+- Payroll day: the 25th of `DEMO_DATE`'s month (2026-11-25) at 09:00.
+  The seed pays salaries on the 25th at 09:00 every month and the open payroll bases are for this month, so this is the natural date.
+  It does not collide with anything: history ends on D-2, legit runs on D-1 daytime, soft and attack on D at night.
+  On a fresh seed the burst windows hold only payroll; after legit only, it still works.
+  After the attack it does not: the 09:00 request on the 25th expires the attack holds and the key is in `probe`, so the script fails and says to run on a fresh seed.
+- The payroll script reads the salaries from the seeded bases instead of copying the seed's random draws, so the seed stays unchanged.
+- Incident holds share one deadline (latest hold plus the limit, or `hold_until`), so every hold is older than the limit when it expires and a key that keeps sending requests while paused stays paused.
+- An expired incident gets the new status `expired`, not `closed`, so it is clear that nobody decided it.
+- Per payment expiry events, plus one for the incident and one for the move to `probe`.
+- Probe holds use `level = hard`, like `key_paused`: Jev never releases them.
+- Only a payment with no rule violation counts as clean; a Jev release in probe does not.
+- New variables `PROBE_MAX_AMOUNT_AED` (1000) and `PROBE_CLEAN_PAYMENTS` (5), read once at breaker start.
+- `key_state` has a new column `probe_clean`; databases from before milestone 6 need a fresh seed.
 
 ### Getting Devin's verdict back
 
