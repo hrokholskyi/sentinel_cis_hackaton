@@ -91,3 +91,16 @@ Roman chose: the real dashboard shows ADCB and Microsoft and has the same subtit
 A one-command demo runner drives it: it pushes the caption and spotlight to the breaker, runs the real traffic scripts, and waits for Enter between beats.
 This goes beyond SPEC sections 11 and 13 (no subtitles, fictional client) by Roman's decision.
 The client rename (name and ids, with regenerated fixtures) runs as its own task after M4 and the Jev tuning are merged, because both touch the seed files.
+
+## 2026-11-21 - Live Jev tuned, default model moved to jev-1.14.0
+Result on the real API: the soft demo case is released 20 of 20 times (0.98 and 0.99), seven must-hold cases are held 20 of 20 times, including a prompt injection in the payment purpose; rechecked by the main agent with `scripts/jev_eval.py --n 3`.
+What worked: a `criteria` true/false pair on each question, a `description` column on `bank.bases` so the purpose is compared with the approved record, and facts such as `prior_payments_last_24h` and `amount_within_prior_range`.
+What failed: an "average interval between payments" fact pulled the legit score down to 0.88, so it was dropped; better facts alone, without `criteria`, only reached 0.70.
+Thresholds stay 0.9 and the timeout stays 1 second: warm p95 is about 290 ms, because the client is now persistent with a warm-up at start (httpx closes idle connections after 5 s by default, the idle limit is now 300 s).
+Deviation from SPEC: the default model is `jev-1.14.0` instead of `jev-1.13.0`, because 1.13.0 passes with only 0.04 of margin on the legit case.
+The first call after about 70 s idle can take about 520 ms (reconnect); still inside the timeout, no keep-alive ping added.
+
+## 2026-11-21 - M4 merged without its change request commit
+The M4 branch was cherry-picked, so commit hashes changed and its `CHANGELOG.md` entry would not match.
+`scripts/change_request.sh` runs once on main as the last commit before the demo instead.
+A stale `breaker.db` from an older schema makes `facts.sh` fail with "no such column"; reseed after pulling schema changes.
