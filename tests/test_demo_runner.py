@@ -10,8 +10,8 @@ import httpx
 
 from conftest import PYTHON, ROOT, baseline_rules_dir
 
-JEV_APPROVED = "The burst starts. Soft stop. Jev says this does not fit the history. " \
-               "The payments stay on hold."
+JEV_APPROVED = "The burst starts. Soft stop. Jev says this does not fit the history, " \
+               "so the payments stay on hold."
 
 
 class LowScoreJev(BaseHTTPRequestHandler):
@@ -108,10 +108,10 @@ def test_demo_runner_auto_completes_all_cases(stack, tmp_path):
     assert "in front of the ADCB payments API" in joined
     assert "Here: Microsoft's payout key." in joined
     assert "42 of 42 executed. Zero held." in joined
-    assert "Both are above 0.90, so the breaker releases the payment." in joined
-    assert "AED 423,000 stopped. AED 27,000 leaked." in joined
-    assert "No webhook configured, offline mode." in joined
-    assert "Before the new rule: 6 of 42 attack payments were executed." in joined
+    assert "Both scores are above 0.90, so the breaker releases the payment." in joined
+    assert "AED 423,000 stopped. But AED 27,000 leaked." in joined
+    assert "Offline mode: no webhook is configured, so Devin is not called." in joined
+    assert "Before the new rule: 6 of 42 attack payments executed." in joined
     assert "The fix is not available yet" in joined
     assert all("\u2014" not in c for c in captions)
     assert any(p["card"] == {"kicker": "Case 3", "title": "Attack"} for p in seen)

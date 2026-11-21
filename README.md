@@ -1,9 +1,17 @@
 # TrustGap
 
-A smart rate limiter in front of a toy bank payment API.
+TrustGap is a payment circuit breaker: a smart rate limiter in front of a toy bank payment API.
 It counts money and client behaviour, not requests, and puts suspicious payments on a reversible hold.
+Three layers decide: SQL rules (milliseconds), the Jev decision model (under a second) and Devin, a coding agent (minutes).
+
+Three external tools do real work here.
+Jev, a decision model from TypeSafe, is layer 2: it may release a soft stop.
+Devin, a coding agent, is layer 3: it investigates an incident, writes a verdict and opens a pull request with a new rule.
+Graphify (the open source PyPI package `graphifyy`, version 0.9.114) built the code knowledge graph in `graphify-out/` with its local code-only extraction, with no model calls.
+The Devin prompt (`docs/devin_prompt.md`, step 5) tells Devin to use that graph to list every code path that reaches the payout function, so a missing check is enforced at one choke point.
+
 `SPEC.md` is the build spec.
-The spec calls the product by its working name, Night Circuit Breaker.
+It calls the product by its working name, Night Circuit Breaker.
 `docs/demo_preview.html` is a simulated walk-through of the demo that needs no services.
 
 The bank is shown as ADCB and the client as Microsoft for illustration only.
@@ -20,7 +28,95 @@ uv pip install -r requirements.txt
 
 Run everything with `.venv/bin/python` (or activate the venv).
 
-## Run
+## Run the demo on stage
+
+One command does everything: seed, services, browser, guided demo.
+
+```sh
+scripts/demo.sh                 # manual: press Enter for each beat
+scripts/demo.sh --auto          # advance on timers
+scripts/demo.sh --from 3        # start at case 3 (only after the earlier cases ran on these databases)
+scripts/demo.sh --no-tour --no-open
+```
+
+What `scripts/demo.sh` does, in order:
+
+1. Loads `.env` if present.
+2. Picks `JEV_MODE=live` when `TYPESAFE_API_KEY` is set and `JEV_MODE` is not, else `stub`.
+3. Reseeds `BANK_DB` and `BREAKER_DB`.
+4. Starts the bank and the breaker on the ports of `BANK_URL` and `BREAKER_URL` (8001 and 8000 by default).
+   It refuses to start if a port is busy.
+5. Waits for both health checks.
+6. Opens the dashboard (`open` on macOS, `xdg-open` on Linux, skipped with `--no-open`).
+7. Runs `scripts/demo.py` with the other arguments.
+
+On exit it stops exactly the two services it started, by pid.
+Service logs go to `.state/demo/`.
+
+## Rehearse without external calls
+
+```sh
+JEV_MODE=stub scripts/demo.sh --no-webhook --no-watcher
+```
+
+- `--no-webhook` (an option of `demo.sh`) unsets `DEVIN_WEBHOOK_URL` and `DEVIN_WEBHOOK_SECRET`, so no Devin session starts, even when `.env` sets them.
+- `--no-watcher` (an option of `demo.py`) never starts the PR watcher, so nothing polls GitHub.
+- `JEV_MODE=stub` keeps Jev offline.
+  `.env` is loaded after the environment, so this works only if `.env` does not set `JEV_MODE` itself.
+
+Use other ports when the default ones are busy, for example `BANK_URL=http://127.0.0.1:8501 BREAKER_URL=http://127.0.0.1:8500`.
+
+## Demo order and keys
+
+`scripts/demo.py` drives the page through the presenter endpoints and runs the traffic scripts as subprocesses.
+
+1. Tour: 7 stops with a spotlight on each part of the page.
+2. Case 1, legit traffic: 42 daytime payments with a 0.12 s delay, all executed.
+3. Case 2, soft stop: the 02:10 payment.
+   Layer 1 holds it and Jev releases it.
+   If Jev does not answer in time, the payment stays on hold and the caption says so.
+4. Case 3, attack: the 02:00 attack with a 0.25 s delay.
+   Captions follow the real state: leak, first soft stop, API key paused, all held.
+5. Case 4, Devin: the webhook status, then "Devin is working" with a timer, until the incident has a verdict and a pull request.
+6. Case 5, replay: `scripts/replay.sh` with the repo rules (6 executed, FAIL), then with `--rules-dir` from the pull request (0 executed, PASS).
+
+Each case has an EXPLAIN beat (title card and captions) and a SHOW beat.
+Keys in the terminal:
+
+| Key | When | What it does |
+|---|---|---|
+| Enter | between beats | next beat |
+| `f` then Enter | case 4, while waiting | apply the verdict from the rehearsal run named in `.state/pr/latest.json`, with a caption that says so |
+| `s` then Enter | case 4, while waiting | skip the wait |
+| Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services |
+| `C` | on the dashboard | subtitles on or off |
+
+When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --timeout-min 30` if that script exists.
+Its log is `.state/demo/watch_pr.log`.
+Case 5 replays against `rules_dir` from `.state/pr/latest.json`.
+Without it the runner shows only the "before" table and says the fix is not available yet.
+
+Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--before-rules DIR`, `--url`.
+`--before-rules DIR` sets the rules folder of the "before" replay in case 5.
+The default is the repo `rules/` folder, which is right on stage; tests pass the baseline folder.
+
+## Before the demo
+
+Every commit of this project is younger than 24 hours, so `scripts/infra_check.sh` reports clean only after the change log covers them.
+After the last code change is merged and committed:
+
+```sh
+scripts/change_request.sh "Demo build"
+git add CHANGELOG.md rules/rules.lock
+git commit -m "Record change request for the demo build"
+scripts/infra_check.sh        # must print "infra check: clean"
+```
+
+The commit must touch only those two files.
+Never edit `CHANGELOG.md` or `rules/rules.lock` by hand.
+After merging a pull request that changes a rule, run the same steps again.
+
+## Commands
 
 ```sh
 .venv/bin/python scripts/seed.py                      # create bank.db and breaker.db from scratch
@@ -35,10 +131,10 @@ scripts/apply_verdict.sh inc_0001 verdict.json        # send a verdict to the br
 scripts/facts.sh held inc_0001                        # read-only facts for the investigator
 scripts/infra_check.sh                                # was our own infrastructure changed?
 scripts/replay.sh                                     # replay legit + latest incident on a fresh instance
+scripts/replay.sh --rules-dir <dir>                   # same replay with the rules of another folder (a PR checkout)
 scripts/change_request.sh "<description>"             # regenerate rules/rules.lock, add a CHANGELOG.md entry
 .venv/bin/python scripts/jev_eval.py                  # live Jev check of 8 cases (needs TYPESAFE_API_KEY, uses ports 8300/8301)
 scripts/watch_pr.sh                                   # wait for the agent's pull request, save it, apply its verdict
-scripts/replay.sh --rules-dir <dir>                   # same replay with the rules of another folder (a PR checkout)
 open http://127.0.0.1:8000/                           # live dashboard, served by the breaker
 .venv/bin/python scripts/demo.py                      # guided demo against running services (presenter mode)
 scripts/demo.sh                                       # the one command for the stage: seed, services, browser, demo
@@ -48,22 +144,8 @@ GRAPHIFY_BACKEND=none graphify extract . --code-only && GRAPHIFY_BACKEND=none gr
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
 `traffic_attack.py` rewrites `traces/attack.jsonl` (gitignored).
 On the attack the breaker writes `fixtures/incidents/inc_0001.jsonl`.
-Run the attack on a fresh seed (or after legit); a second attack run on the same databases only meets a paused key.
-
-Breaker endpoints besides `POST /payouts`:
-
-| Endpoint | What it does |
-|---|---|
-| `GET /health` | Health check on both services; the breaker also lists the loaded rule ids |
-| `GET /state` | Key states, reservation counts and sums by status, open incident, all incidents, last 10 events |
-| `POST /admin/keys/{id}/resume` | Key back to `normal`, closes its open incident |
-| `POST /admin/holds/{id}/release` | Sends a held payment to the bank (marked `released`, then `executed`) |
-| `POST /admin/holds/{id}/reject` | Marks a held payment `rejected`; it is never sent |
-| `GET /` | The live dashboard (`breaker/static/index.html`) |
-| `POST /admin/presenter` | Sets presenter fields (subtitle, spotlight, title card, stepper, panel); kept in memory |
-| `DELETE /admin/presenter` | Clears the presenter state; the page becomes a plain live dashboard |
-
-Admin endpoints need the header `X-Admin-Token: $ADMIN_TOKEN`.
+Run the attack on a fresh seed (or after legit).
+A second attack run on the same databases only meets a paused API key.
 
 Each traffic script prints a one-line summary such as `sent 42 executed 42 held 0` and exits non-zero when the result differs from SPEC section 8.
 Use `--delay <seconds>` to change the real pause between requests and `--trace <path>` to write the JSONL trace somewhere else.
@@ -74,16 +156,38 @@ Tests start both services on free ports against temp databases:
 .venv/bin/python -m pytest -q
 ```
 
+## Breaker endpoints
+
+Besides `POST /payouts`:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /health` | Health check on both services; the breaker also lists the loaded rule ids |
+| `GET /state` | API key states, reservation counts and sums by status, open incident, all incidents, last 10 events |
+| `POST /admin/keys/{id}/resume` | API key back to `normal`, closes its open incident |
+| `POST /admin/holds/{id}/release` | Sends a held payment to the bank (marked `released`, then `executed`) |
+| `POST /admin/holds/{id}/reject` | Marks a held payment `rejected`; it is never sent |
+| `GET /` | The live dashboard (`breaker/static/index.html`) |
+| `POST /admin/presenter` | Sets presenter fields (subtitle, spotlight, title card, stepper, panel); kept in memory |
+| `DELETE /admin/presenter` | Clears the presenter state; the page becomes a plain live dashboard |
+
+Admin endpoints need the header `X-Admin-Token: $ADMIN_TOKEN`.
+
 ## Layer 2: Jev
 
 A payment with only soft violations goes to Jev (`breaker/jev.py`) after its hold is committed.
-`JEV_MODE=stub` (default) needs no network and is deterministic.
-`live` calls `POST $JEV_URL` (default `https://api.typesafe.ai/v1/systemone`) with `Authorization: Bearer $TYPESAFE_API_KEY`, and may release.
-`shadow` calls the API and logs the answer but never releases.
-The breaker releases only if `fits_history >= JEV_T_HISTORY` and `purpose_matches_basis >= JEV_T_BASIS` (both default 0.9).
-Timeout (`JEV_TIMEOUT_S`, 1 second total, no retry), connection error, non-200, malformed answer or a missing API key: the hold stays.
-Every call is logged in `jev_calls` (request, response, latency, released, mode), and the API key is never stored.
 Hard stops never call Jev.
+
+| `JEV_MODE` | What it does |
+|---|---|
+| `stub` (default) | No network, deterministic. |
+| `live` | Calls `POST $JEV_URL` (default `https://api.typesafe.ai/v1/systemone`) with `Authorization: Bearer $TYPESAFE_API_KEY`, and may release. |
+| `shadow` | Calls the API and logs the answer, but never releases. |
+
+The breaker releases only if `fits_history >= JEV_T_HISTORY` and `purpose_matches_basis >= JEV_T_BASIS` (both default 0.9).
+The hold stays on a timeout (`JEV_TIMEOUT_S`, 1 second total, no retry), a connection error, a non-200 status, a malformed answer or a missing API key.
+Every call is logged in `jev_calls` (request, response, latency, released, mode), and the API key is never stored.
+
 Run `traffic_soft.py` after legit and before the attack.
 After the attack the 1 hour sum rule makes the same payment a hard stop.
 `traffic_soft.py --expect held` exits 0 when the payment stays held, for example with `JEV_MODE=live` and a dead `JEV_URL`.
@@ -105,7 +209,8 @@ Then it asks Jev `--n` times per case (default 5) and prints the scores (min, me
 | H6 | hold | attack payment 7 with a prompt injection as purpose |
 | H7 | hold | first payment of AED 48,000 at 14:00 to a new supplier with a matching approved basis |
 
-A release case passes when at least `n - n // 20` calls release it (19 of 20); a hold case passes only when every call holds.
+A release case passes when at least `n - n // 20` calls release it (19 of 20).
+A hold case passes only when every call holds.
 `--model` compares models, `--cases R1,H5` picks cases, `--dump file.json` writes the facts and makes no API call.
 
 ## Dashboard
@@ -116,7 +221,7 @@ It is laid out for a stage screen and holds at 1920x1080 and 1440x900 with no pa
 
 What it shows, all from the databases:
 
-- Key state badge (NORMAL, PAUSED, PROBE) for the client's API key, with the client name from `bank.clients`.
+- API key state badge (NORMAL, PAUSED, PROBE) for the client's API key, with the client name from `bank.clients`.
   The flip to PAUSED flashes the screen and shows "KEY PAUSED" for a moment.
 - Scenario clock: the request time of the latest reservation.
 - Counters: stopped, leaked, legitimate payments held, released by Jev with median latency, first violation to pause.
@@ -124,63 +229,27 @@ What it shows, all from the databases:
 - Payment stream (latest 60 reservations, newest on top), hold queue (last 15 held), incident card, last 10 events.
 
 `GET /state` keeps every earlier field and adds `bank_name`, `client`, `key`, `clock`, `jev_mode`, `counters`, `stream`, `hold_queue`, `incident`, `layers` and `presenter`.
-Definitions:
+Counter definitions:
 
 | Counter | Definition |
 |---|---|
 | Stopped | Reservations with status `held`: count and AED sum |
-| Leaked | For each incident, the key's `executed` reservations created in the hour up to `tripped_at`, except those sent later by a verdict or an admin |
+| Leaked | For each incident, the API key's `executed` reservations created in the hour up to `tripped_at`, except those sent later by a verdict or an admin |
 | Legitimate payments held | Held reservations that would pass the release re-check of a verdict (`incidents.recheck`) |
 | Released by Jev | `jev_calls` rows with `released = 1`; median latency over the calls that got a valid answer |
 | First violation to pause | `violation_to_pause_ms` of the open incident, else the latest one |
 
 Presenter mode: `POST /admin/presenter` (header `X-Admin-Token`) takes any of `caption`, `spotlight`, `card`, `step`, `step_done`, `panel`.
 A missing field keeps its value and `null` clears it; `DELETE /admin/presenter` clears everything.
-`spotlight` is one of `all`, `layers`, `layer1`, `layer2`, `layer3`, `key`, `counters`, `stream`, `queue`, `incident`, `events`.
-`card` is `{"kicker": "Case 2", "title": "Soft stop"}`, `step` is 0 (tour) to 5, `step_done` a list of steps, `panel` is `{"title", "text"}` shown in monospace over the stream and hold queue.
+
+- `spotlight` is one of `all`, `layers`, `layer1`, `layer2`, `layer3`, `key`, `counters`, `stream`, `queue`, `incident`, `events`.
+- `card` is `{"kicker": "Case 2", "title": "Soft stop"}`.
+- `step` is 0 (tour) to 5, and `step_done` is a list of steps.
+- `panel` is `{"title", "text"}`, shown in monospace over the stream and hold queue.
+
 The state lives in the breaker process, so a restart clears it.
 With no presenter state the page is a plain live dashboard: no stepper, no subtitles, no dimming.
 On the page, the key `C` shows or hides the subtitles.
-
-## Running the demo
-
-```sh
-scripts/demo.sh                 # manual: press Enter for each beat
-scripts/demo.sh --auto          # advance on timers
-scripts/demo.sh --from 3        # start at case 3 (only after the earlier cases ran on these databases)
-scripts/demo.sh --no-tour --no-open
-```
-
-`scripts/demo.sh` loads `.env` if present, picks `JEV_MODE=live` when `TYPESAFE_API_KEY` is set and `JEV_MODE` is not (else `stub`), reseeds `BANK_DB` and `BREAKER_DB`, and starts the bank and the breaker on the ports of `BANK_URL` and `BREAKER_URL` (8001 and 8000 by default).
-It refuses to start if a port is busy, waits for both health checks, opens the dashboard (`open` on macOS, `xdg-open` on Linux, skipped with `--no-open`) and runs `scripts/demo.py` with the other arguments.
-On exit it stops exactly the two services it started, by pid.
-Service logs go to `.state/demo/`.
-
-`scripts/demo.py` drives the page through the presenter endpoints and runs the traffic scripts as subprocesses.
-Demo order:
-
-1. Tour: 7 stops with a spotlight on each part of the page.
-2. Case 1, legit traffic: 42 daytime payments with a 0.12 s delay, all executed.
-3. Case 2, soft stop: the 02:10 payment; Layer 1 holds it, Jev releases it (or, with no answer in time, it stays on hold and the caption says so).
-4. Case 3, attack: the 02:00 attack with a 0.25 s delay; captions follow the real state (leak, first soft stop, key paused, all held).
-5. Case 4, Devin: the webhook status, then "Devin is working" with a timer until the incident has a verdict and a pull request.
-6. Case 5, replay: `scripts/replay.sh` with the repo rules (6 executed, FAIL), then with `--rules-dir` from the pull request (0 executed, PASS).
-
-Each case has an EXPLAIN beat (title card and captions) and a SHOW beat.
-Keys in the terminal:
-
-| Key | When | What it does |
-|---|---|---|
-| Enter | between beats | next beat |
-| `f` then Enter | case 4, while waiting | apply the verdict from the rehearsal run named in `.state/pr/latest.json`, with a caption that says so |
-| `s` then Enter | case 4, while waiting | skip the wait |
-| Ctrl-C | any time | clear the presenter state, stop the child processes, stop the services |
-| `C` | on the dashboard | subtitles on or off |
-
-When the incident opens, the runner starts `scripts/watch_pr.py --since <tripped_wall_at> --timeout-min 30` if that script exists; its log is `.state/demo/watch_pr.log`.
-Case 5 replays against `rules_dir` from `.state/pr/latest.json`; without it the runner shows only the "before" table and says the fix is not available yet.
-Options of `demo.py`: `--auto`, `--from N`, `--no-tour`, `--pace` (multiplies caption times), `--legit-delay`, `--attack-delay`, `--no-hold`, `--no-watcher`, `--watcher PATH`, `--pr-state PATH`, `--before-rules DIR`, `--url`.
-`--before-rules DIR` sets the rules folder of the "before" replay in case 5 (default: the repo `rules/` folder, which is right on stage; tests pass the baseline folder).
 
 ## Milestone 6: probe, expiry, payroll
 
@@ -255,6 +324,7 @@ The count is `key_state.probe_clean` in `breaker.db`, so it survives a breaker r
 
 See `.env.example` for all variables and their defaults.
 The services do not read `.env` themselves; load it with `set -a; . ./.env; set +a` if you need other values.
+`scripts/demo.sh` loads it for you.
 
 | Variable | Default | Used by |
 |---|---|---|
@@ -287,16 +357,19 @@ The webhook reports the Jev model from `JEV_MODEL` (default `jev-1.13.0`).
 ```
 
 `scripts/apply_verdict.sh <incident_id> <verdict.json>` sends it with `curl` to `BREAKER_URL` with `ADMIN_TOKEN`, prints the response and exits 1 on a non-2xx status.
-Unknown incident: 404.
-Bad body (unknown verdict, missing `reason`, unknown field, `incident_id` not equal to the path id): 422.
-Closed incident: 409.
+
+| Response | When |
+|---|---|
+| 404 | Unknown incident |
+| 422 | Bad body: unknown verdict, missing `reason`, unknown field, or `incident_id` not equal to the path id |
+| 409 | Closed incident |
 
 | Verdict | What the breaker does |
 |---|---|
-| `release` | Re-checks every held payment of the incident, one at a time: the beneficiary needs a bank payment before the hold, and an approved, unused basis for the same beneficiary with exactly the same amount (the payment's own `basis_id` if it has one). Passing payments go to the bank with that basis, so one basis releases at most one payment. If any payment fails the check, it stays held, the verdict is stored as `contact_client` and the key stays paused. If all pass, the key returns to `normal` and the incident is closed. |
+| `release` | Re-checks every held payment of the incident, one at a time: the beneficiary needs a bank payment before the hold, and an approved, unused basis for the same beneficiary with exactly the same amount (the payment's own `basis_id` if it has one). Passing payments go to the bank with that basis, so one basis releases at most one payment. If any payment fails the check, it stays held, the verdict is stored as `contact_client` and the API key stays paused. If all pass, the API key returns to `normal` and the incident is closed. |
 | `hold_until_morning` | Stores `hold_until` = the next 08:00 (request clock) on the incident. Holds stay. |
 | `contact_client` | Event "client contacted by second channel (simulated)". Holds stay. |
-| `escalate_bank_security` | Event "bank security paged (simulated)". Key stays paused, holds stay. |
+| `escalate_bank_security` | Event "bank security paged (simulated)". API key stays paused, holds stay. |
 
 The `evidence` ids are stored but never trusted; the database decides.
 `GET /state` returns `pause_to_pr_min` for each incident: real minutes from the pause to the verdict, null until a verdict with a `pr_url` arrives.
@@ -318,12 +391,13 @@ The wrappers use `$PYTHON` if set, else `.venv/bin/python` if it exists, else `p
 Databases for `facts.sh` and `infra_check.sh`: `BANK_DB` and `BREAKER_DB` if set and both exist, else `bank.db` and `breaker.db` in the repo root if both exist, else a snapshot.
 The snapshot is built in `.state/` (gitignored): fresh seed, services in stub mode with no webhook, replay of `fixtures/legit.jsonl` and then the latest incident trace.
 The seed is deterministic, so this reproduces the incident; one line on stderr says that a snapshot was built.
+
 `docs/devin_prompt.md` is the prompt for the Devin automation, copied unchanged from SPEC section 10.
 `rules/README.md` explains the rule format to an agent that adds a rule.
 
 ## Getting Devin's verdict back
 
-Devin runs on its own machine and cannot reach the breaker, and it sends no callback.
+Devin runs on its own machine, cannot reach the breaker, and sends no callback.
 So a watcher on the demo laptop looks for its pull request and feeds the verdict to the breaker:
 
 ```sh
@@ -343,7 +417,7 @@ The token comes from `GITHUB_TOKEN`, else `gh auth token`; with neither, GitHub 
 On a 403 or 429 it sleeps until the rate limit resets, at most 60 seconds, and tries again.
 
 Artifacts go to `.state/pr/<number>/`: `verdict.json` as downloaded, `rules/` with every `rules/*.sql` at the pull request head, `report.md` if there is a `reports/*.md` file, and `pr.json` (with the author login and `head_repo`).
-`.state/pr/latest.json` points to them for other scripts, paths relative to the repo root:
+`.state/pr/latest.json` points to them for other scripts, with paths relative to the repo root:
 
 ```json
 {"number": 1, "url": "https://github.com/OWNER/REPO/pull/1", "head_sha": "...", "dir": ".state/pr/1",
@@ -358,33 +432,15 @@ Malformed API answers (a number that is not a positive integer, a bad head sha, 
 Exit codes: 0 done, 2 setup error or a refused `--pr`, 3 timeout, 4 the breaker refused the verdict or was unreachable (artifacts stay saved, `applied` is false), 5 GitHub API error.
 `tests/test_watch_pr.py` runs the watcher against a fake GitHub API.
 
-## Before the demo
-
-Every commit of this project is younger than 24 hours, so `scripts/infra_check.sh` reports clean only after the change log covers them.
-After the last code change is merged and committed:
-
-```sh
-scripts/change_request.sh "Demo build"
-git add CHANGELOG.md rules/rules.lock
-git commit -m "Record change request for the demo build"
-scripts/infra_check.sh        # must print "infra check: clean"
-```
-
-The commit must touch only those two files.
-Never edit `CHANGELOG.md` or `rules/rules.lock` by hand.
-After merging a pull request that changes a rule, run the same steps again.
-
 ## Choices left open by the spec
 
-- The watcher takes only pull requests from branches in the watched repository (not forks), optionally limited to `--authors`; `--allow-forks` is the explicit opt-out.
+### Calendar, time and seed
+
 - Demo calendar is fixed on `DEMO_DATE` = D = 2026-11-21.
   Seed history covers the 90 days ending D-2, legit traffic runs on D-1 from 09:00, the attack runs on D from 02:00.
 - All timestamps are stored as Gulf time (UTC+4, no DST) naive strings `YYYY-MM-DD HH:MM:SS`, so SQLite `datetime()` works on them.
   With `DEMO_MODE=1` (the default, so the plain run commands work) both services take "now" from `X-Sim-Time`; the breaker forwards that header to the bank.
   Without the header they use the real Gulf time.
-- Tests about the historic incident run on a pinned baseline of the six original rule files (`baseline_rules_dir()` in `tests/conftest.py`), so adding a rule to `rules/` does not change them.
-  Only a few tests use the live `rules/` folder: every rule loads, and the legit trace is fully executed.
-- A demo caption that depends on a Jev answer waits up to 3 seconds for the Jev call to show in `/state` (the breaker commits the hold before it calls Jev); only if none appears does it say Jev gave no answer.
 - The seed is fully deterministic (fixed random seeds, fixed ids).
   Ids and the legit traffic plan live in `scripts/common.py`, shared by the seed and the traffic scripts.
 - Legit plan: 40 invoice payments to 11 regular suppliers plus the first payments to the 2 new suppliers (AED 3,200 and 4,750), one every 13 minutes from 09:00 to 17:53.
@@ -401,6 +457,11 @@ After merging a pull request that changes a rule, run the same steps again.
 - Traces: `request` is the JSON body only, never the key secret.
   `basis_id` is left out of the body when there is none.
   `status` is the reservation outcome (`executed`, `held` or `rejected`).
+
+### Tests
+
+- Tests about the historic incident run on a pinned baseline of the six original rule files (`baseline_rules_dir()` in `tests/conftest.py`), so adding a rule to `rules/` does not change them.
+  Only a few tests use the live `rules/` folder: every rule loads, and the legit trace is fully executed.
 
 ### Rules and counters
 
@@ -509,6 +570,7 @@ After merging a pull request that changes a rule, run the same steps again.
   Untracked files in monitored paths count as uncommitted changes.
   `rules/rules.lock` lists `sha256  file name` for `rules/*.sql` only.
 - `replay.sh` exits 2 on a usage error (unknown incident id), 1 when a criterion fails.
+  It stops its services through a pid file and a shell `trap`, and Python stops them too.
 
 ### Dashboard and demo runner
 
@@ -516,16 +578,19 @@ After merging a pull request that changes a rule, run the same steps again.
 - The stream is ordered by arrival (rowid), not by request time, because the demo clock jumps back and forth; a divider row marks each jump of the scenario clock.
 - The scenario clock is the request time of the latest reservation, not the maximum request time.
 - Leaked excludes payments released later by a verdict or an admin, so a `release` verdict never counts as a leak.
-- "Got an answer" for the median Jev latency means both scores in the logged response are numbers between 0 and 1. In stub mode the latency is 0 ms.
+- "Got an answer" for the median Jev latency means both scores in the logged response are numbers between 0 and 1.
+  In stub mode the latency is 0 ms.
 - A "FIRST" tag in the stream marks a payment to a beneficiary with no bank payment before it.
 - The active layer card is the one whose latest decision changed last, or the one under the spotlight.
 - The header shows the bank name from `BANK_NAME` and a "Fictional scenario - synthetic data" tag; there are no logos or brand colours.
-- In case 3 the runner pauses the attack script (SIGSTOP, then SIGCONT) while a caption is read, so the narration never lags behind the screen; `--no-hold` turns this off. The breaker is not affected: the request times come from the plan.
+- A demo caption that depends on a Jev answer waits up to 3 seconds for the Jev call to show in `/state` (the breaker commits the hold before it calls Jev); only if none appears does it say Jev gave no answer.
+- In case 3 the runner pauses the attack script (SIGSTOP, then SIGCONT) while a caption is read, so the narration never lags behind the screen; `--no-hold` turns this off.
+  The breaker is not affected: the request times come from the plan.
 - The runner writes its traffic traces to `traces/demo_*.jsonl`, so a demo never rewrites `fixtures/legit.jsonl`.
-- The breaker still writes the incident trace to `INCIDENTS_DIR` (default `fixtures/incidents/`). After a demo with the soft case, `fixtures/incidents/inc_0001.jsonl` differs from the committed one in its reservation ids; restore it with `git checkout fixtures/incidents`.
+- The breaker still writes the incident trace to `INCIDENTS_DIR` (default `fixtures/incidents/`).
+  After a demo with the soft case, `fixtures/incidents/inc_0001.jsonl` differs from the committed one in its reservation ids; restore it with `git checkout fixtures/incidents`.
 - In `--auto` mode case 4 ends when no PR watcher is running, with the caption "No pull request yet".
 - The fallback copies the rehearsal verdict to a temp file with the current incident id (and the PR URL from `latest.json` if the verdict has none) before `apply_verdict.sh` sends it.
-  It stops its services through a pid file and a shell `trap`, and Python stops them too.
 
 ### Milestone 6: probe, expiry, payroll
 
@@ -545,6 +610,7 @@ After merging a pull request that changes a rule, run the same steps again.
 
 ### Getting Devin's verdict back
 
+- The watcher takes only pull requests from branches in the watched repository (not forks), optionally limited to `--authors`; `--allow-forks` is the explicit opt-out.
 - The watcher uses the PR's `html_url` from GitHub as `pr_url`, whatever `verdict.json` says.
 - Verdict file lookup: among the changed files, the `verdict.json` nearest to the repo root; paths with `..`, a leading `/` or a backslash are refused.
 - A verdict file that is missing, not valid JSON, not an object or larger than 200 KB counts as "not there yet": the watcher keeps polling, because the agent may push more commits.

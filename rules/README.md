@@ -2,13 +2,14 @@
 
 Every file `rules/*.sql` is one rule of layer 1 of the breaker.
 The breaker loads all of them once at start, in file-name order, and runs every rule on every payout request.
-Adding a file adds a rule; no code change is needed.
+Adding a file adds a rule. No code change is needed.
 Restart the breaker to load a new or changed rule.
 
 ## File name
 
 Name the file `NN_<rule_id>.sql`, for example `04_burst_count_5m.sql`.
-`NN` is a two-digit number; rules are evaluated in file-name order, so a new rule takes the next free number.
+`NN` is a two-digit number.
+Rules run in file-name order, so a new rule takes the next free number.
 `<rule_id>` is the same id as in the `-- id:` header.
 
 ## File format
@@ -82,7 +83,8 @@ Read `reservations` and the `bank.*` tables only.
 | `decided_at`, `decided_by`, `payment_id`, `incident_id` | Outcome bookkeeping. |
 
 Counters must include held and pending payments, not only executed ones.
-Count `status IN ('pending','executed','held','released')`; `rejected` payments were never sent.
+Count `status IN ('pending','executed','held','released')`.
+`rejected` payments were never sent.
 
 Bank tables (history and master data):
 
@@ -101,20 +103,21 @@ All timestamps are local Gulf time (UTC+4, no daylight saving) stored as text `Y
 In the demo the request clock is simulated (header `X-Sim-Time`) and it goes backwards between scenarios.
 So every time window needs both bounds: `created_at >= datetime(:now, '-5 minutes') AND created_at <= :now`.
 "Prior payments" of a beneficiary are `bank.payments` rows with `created_at < :now`.
-The webhook reports the window of the tripping rule; it reads the length from the first `datetime(:now, '-N minutes')` (or seconds, hours, days) in the rule, and uses 1 hour if there is none.
+The webhook reports the window of the tripping rule.
+It reads the length from the first `datetime(:now, '-N minutes')` (or seconds, hours, days) in the rule, and uses 1 hour if there is none.
 
 ## The current payment is already inserted
 
 When the rules run, the current payment is already in `reservations` with status `pending`, inside the same `BEGIN IMMEDIATE` transaction.
 So a counter over `reservations` includes it: `COUNT(*) > 8` is violated by the 9th payment in the window.
 `bank.payments` does not contain it yet.
-When the key is paused, rules do not run at all: every payment is held with `rule_id = key_paused`.
+When the API key is paused, rules do not run at all: every payment is held with `rule_id = key_paused`.
 
 ## Soft and hard
 
 - `soft`: the payment is held and layer 2 (the Jev decision model) may release it.
   If it is not released, the client is asked to confirm and the payment stays held.
-- `hard`: the payment is held, the API key is paused (every later payment of the key is held), an incident is opened, its trace file is written and the investigator is notified.
+- `hard`: the payment is held, the API key is paused (every later payment of that API key is held), an incident is opened, its trace file is written and the investigator is notified.
   Jev is never asked.
 
 When several rules are violated, the payment stores the first hard rule in file-name order, or the first soft rule if no hard rule fired.
@@ -151,11 +154,12 @@ def test_inc_0001_is_fully_held(tmp_path):
 `replaylib.start(tmp_path)` loads the live `rules/` folder, so the example uses your new rule.
 The `stack` and `make_stack` fixtures of `tests/conftest.py` run on a pinned baseline of the six original rules instead, so do not use them for this test.
 Inside the `with` block, `stack.get("/state")` returns the breaker state and `stack.env["BREAKER_DB"]` is the path of the temp breaker database, if you want to check which rule held a payment.
-Always replay `fixtures/legit.jsonl` before an attack trace: once the attack pauses the key, every later payment of that key is held.
+Always replay `fixtures/legit.jsonl` before an attack trace: once the attack pauses the API key, every later payment of that API key is held.
 
 ## Do not edit by hand
 
 `rules/rules.lock` (checksums of the rule files) and `CHANGELOG.md` are generated files.
 Never edit them by hand, and do not regenerate them in a pull request.
 The maintainer runs `scripts/change_request.sh "<description>"` after the pull request is merged.
-Until then `scripts/infra_check.sh` reports the new rule as a change without a change request; that is expected.
+Until then `scripts/infra_check.sh` reports the new rule as a change without a change request.
+That is expected.

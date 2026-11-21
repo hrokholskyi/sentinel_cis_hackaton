@@ -324,7 +324,7 @@ var CAP=[
  '02:10 at night, AED 48,000 to a known supplier with an approved invoice. Layer 1 holds it, Jev checks the facts, the breaker releases it.',
  '02:00, a stolen API key starts paying dormant beneficiaries. Small payments first, then a burst.',
  'The incident wakes Devin. It investigates and proposes a fix. It never moves money.',
- 'Same attack, replayed against the new rule. Nothing leaks, and legit traffic is untouched.'
+ 'Same attack, replayed against the new rule. Nothing leaks, and legitimate traffic is untouched.'
 ];
 var NAMES=['Legit traffic','Soft stop','Attack','Devin','Replay'];
 
@@ -461,30 +461,30 @@ at(5,9500,function(){S.R.closing=true;addEv('replay passed: leak closed','ok');}
 /* ---------- beats and subtitles ---------- */
 function rt(s){return Math.max(2500,s.length*60);}
 var TOURS=[
- {t:'page',title:'The whole page',sub:"This is TrustGap. It sits in front of the ADCB payments API and limits money and behaviour, not request counts."},
- {t:'layers',title:'Three layers',sub:"Three layers decide. Layer 1: SQL rules, in milliseconds. Layer 2: Jev, a decision model, in under a second. Layer 3: Devin, a coding agent, in minutes."},
- {t:'key',title:'Key state',sub:"The state of one client API key. Here: Microsoft's payout key."},
- {t:'counters',title:'Counters',sub:"Money stopped. Money leaked. Legitimate payments held by mistake, target zero. Payments released by Jev. Time from first violation to pause."},
- {t:'stream',title:'Payment stream',sub:"Every payout request, as it arrives."},
+ {t:'page',title:'The whole page',sub:"This is TrustGap. It sits in front of the ADCB payments API and limits money and behaviour, not requests."},
+ {t:'layers',title:'Three layers',sub:"Three layers: SQL rules in milliseconds, Jev by TypeSafe in under a second, Devin with Graphify in minutes."},
+ {t:'key',title:'Key state',sub:"The state of the client's API key. Here: Microsoft's payout key."},
+ {t:'counters',title:'Counters',sub:"Money stopped. Money leaked. Legitimate payments held by mistake: the target is zero."},
+ {t:'stream',title:'Payment stream',sub:"Every payment request, live, newest on top."},
  {t:'hold',title:'Hold queue',sub:"Payments on hold. A hold is reversible, a release is not. So anything unclear stays on hold."},
- {t:'side',title:'Incident and events',sub:"When a key is paused, an incident opens. The verdict and the pull request from Devin appear here."}
+ {t:'side',title:'Incident and events',sub:"When an API key is paused, an incident opens here. Devin's verdict and pull request appear here too."}
 ];
 var CASES=[null,
  {name:'Legit traffic',cap:'A normal business day. 42 payments, the breaker lets all of them through.',
-  ex:["Case 1: a normal business day. Microsoft pays 42 supplier invoices through ADCB.","Nothing should be stopped."],
+  ex:["Case 1: a normal business day. Microsoft pays 42 supplier invoices through ADCB.","Watch: all 42 payments should go through, and none should be held."],
   show:[{at:0,text:"Layer 1 checks each payment against the client's own history: usual time, usual amount, known beneficiary."},{at:7700,text:"42 of 42 executed. Zero held. For normal business the breaker is invisible."}]},
  {name:'Soft stop',cap:'02:10 at night, AED 48,000 to a known supplier with an approved invoice. Layer 1 holds it, Jev checks the facts, the breaker releases it.',
   ex:["Case 2: unusual, but legitimate. 02:10 at night, AED 48,000 to a known supplier, with an approved invoice.","Watch Layer 1 hold it and Layer 2 release it."],
-  show:[{at:1400,text:"Layer 1: off hours and a large amount. Soft stop. The payment is on hold."},{at:5700,text:"Layer 2: Jev gets aggregated facts and answers two questions with probabilities."},{at:10500,text:"Both are above 0.90, so the breaker releases the payment. The thresholds live in our code, not in the model."},{at:17000,text:"Released in under a second. Jev may only release a soft stop. It can never override a hard stop."}]},
+  show:[{at:1400,text:"Layer 1: a large amount at night. Soft stop: the payment is on hold."},{at:5700,text:"Layer 2: Jev reads the facts and answers two questions. Does it fit the history? Does it match the invoice?"},{at:10500,text:"Both scores are above 0.90, so the breaker releases the payment. The threshold is in our code, not in Jev."},{at:17000,text:"Released in under a second. Jev may only release a soft stop. It can never override a hard stop."}]},
  {name:'Attack',cap:'02:00, a stolen API key starts paying dormant beneficiaries. Small payments first, then a burst.',
-  ex:["Case 3: a stolen API key. At 02:00 an attacker starts paying three beneficiaries that were approved long ago and never paid.","Watch the leak, then the stop."],
-  show:[{at:300,text:"Six small payments, AED 4,500 each, below every threshold. They pass. No rule covers dormant beneficiaries yet."},{at:6900,text:"The burst starts. Soft stop. Jev says this does not fit the history. The payments stay on hold."},{at:12600,text:"Payment 9 trips the burst rule. Hard stop. The key is paused 4 seconds after the first violation."},{at:19300,text:"Every further payment is held. AED 423,000 stopped. AED 27,000 leaked."}]},
+  ex:["Case 3: a stolen API key. At 02:00 the attacker pays three dormant beneficiaries: approved long ago, never paid.","Watch: a few payments leak first. Then the breaker stops the rest."],
+  show:[{at:300,text:"Six payments of AED 4,500 pass, each under every limit. No rule covers dormant beneficiaries yet."},{at:6900,text:"The burst starts. Soft stop. Jev says this does not fit the history, so the payments stay on hold."},{at:12600,text:"Payment 9 trips the burst rule. Hard stop. The API key is paused 4 seconds after the first violation."},{at:19300,text:"Every later payment is held. AED 423,000 stopped. But AED 27,000 leaked."}]},
  {name:'Devin',cap:'The incident wakes Devin. It investigates and proposes a fix. It never moves money.',
-  ex:["Case 4: closing the gap. The incident wakes Devin, a coding agent.","Devin never moves money. It investigates and proposes."],
-  show:[{at:0,text:"First it checks our own infrastructure: no unexplained changes in 24 hours."},{at:4500,text:"Then the client: three beneficiaries, no payments before tonight, no approved invoices."},{at:9700,text:"Verdict: contact the client. The breaker executes the verdict and would re-check any release against the database."},{at:16500,text:"Devin opens a pull request with one new SQL rule and a regression test. A human reviews and merges it."}]},
- {name:'Replay',cap:'Same attack, replayed against the new rule. Nothing leaks, and legit traffic is untouched.',
-  ex:["Case 5: proof. We replay the same attack and the same normal day against the new rule."],
-  show:[{at:0,text:"Before the new rule: 6 of 42 attack payments were executed."},{at:3500,text:"After: 0 of 42. And legit traffic is still 42 of 42."},{at:9500,text:"AED 27,000 leak closed. Zero legitimate payments held."}]}
+  ex:["Case 4: closing the gap. The incident wakes Devin, a coding agent.","Devin never moves money. It investigates, gives a verdict and proposes a new rule.","Devin also gets a Graphify code graph of this repo, to find every code path that can send money."],
+  show:[{at:0,text:"First it checks our own infrastructure: no unexplained changes in 24 hours."},{at:4500,text:"Then the client: three beneficiaries, no payments before tonight, no approved invoices."},{at:9700,text:"Verdict: contact the client. The breaker executes it, and re-checks any release against the database."},{at:16500,text:"Devin opens a pull request with one new SQL rule and a regression test. A human reviews and merges it."}]},
+ {name:'Replay',cap:'Same attack, replayed against the new rule. Nothing leaks, and legitimate traffic is untouched.',
+  ex:["Case 5: proof. We replay the same attack and the same normal day against the new rule.","Watch the attack line go from FAIL to PASS. The normal day must pass both times."],
+  show:[{at:0,text:"Before the new rule: 6 of 42 attack payments executed."},{at:3500,text:"After the new rule: 0 of 42 attack payments executed. Legitimate payments: still 42 of 42."},{at:9500,text:"The AED 27,000 leak is closed. Zero legitimate payments are held."}]}
 ];
 var BEATS=[];
 TOURS.forEach(function(x,i){BEATS.push({kind:'tour',i:i,c:0,spot:x.t,title:x.title,subs:[{at:0,text:x.sub}],dur:rt(x.sub)});});

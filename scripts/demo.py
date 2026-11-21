@@ -217,26 +217,24 @@ class Runner:
         client = (s.get("client") or {}).get("name") or "the client"
         stops = [
             ("all", f"This is TrustGap. It sits in front of the {bank} payments API "
-                    "and limits money and behaviour, not request counts."),
-            ("layers", "Three layers decide. Layer 1: SQL rules, in milliseconds. Layer 2: Jev, "
-                       "a decision model, in under a second. Layer 3: Devin, a coding agent, "
-                       "in minutes."),
-            ("key", f"The state of one client API key. Here: {client}'s payout key."),
-            ("counters", "Money stopped. Money leaked. Legitimate payments held by mistake, "
-                         "target zero. Payments released by Jev. Time from first violation to "
-                         "pause."),
-            ("stream", "Every payout request, as it arrives."),
+                    "and limits money and behaviour, not requests."),
+            ("layers", "Three layers: SQL rules in milliseconds, Jev by TypeSafe in under a "
+                       "second, Devin with Graphify in minutes."),
+            ("key", f"The state of the client's API key. Here: {client}'s payout key."),
+            ("counters", "Money stopped. Money leaked. Legitimate payments held by mistake: "
+                         "the target is zero."),
+            ("stream", "Every payment request, live, newest on top."),
             ("queue", "Payments on hold. A hold is reversible, a release is not. So anything "
                       "unclear stays on hold."),
-            ("incident", "When a key is paused, an incident opens. The verdict and the pull "
-                         "request from Devin appear here."),
+            ("incident", "When an API key is paused, an incident opens here. Devin's verdict "
+                         "and pull request appear here too."),
         ]
         print("Tour")
         for i, (spot, text) in enumerate(stops, start=1):
             self.say(text, step=0, step_done=self.step_done, spotlight=spot, card=None,
                      panel=None)
             if i < len(stops):
-                self.beat(f"tour stop {i + 1} of {len(stops)}")
+                self.beat(f"next tour stop ({i + 1} of {len(stops)})")
         self.step_done.append(0)
 
     def explain(self, case: int, lines: list[str]) -> None:
@@ -245,7 +243,7 @@ class Runner:
                      card={"kicker": f"Case {case}", "title": CASES[case]})
         for text in lines:
             self.say(text)
-        self.beat(f"show case {case}")
+        self.beat(f"show case {case} live")
         self.present(card=None)
 
     def done(self, case: int) -> None:
@@ -256,7 +254,8 @@ class Runner:
         s = self.state()
         client, bank = (s.get("client") or {}).get("name") or "The client", s["bank_name"]
         self.explain(1, [f"Case 1: a normal business day. {client} pays 42 supplier invoices "
-                         f"through {bank}.", "Nothing should be stopped."])
+                         f"through {bank}.",
+                         "Watch: all 42 payments should go through, and none should be held."])
         before = s["reservations"]
         p = self.script("traffic_legit.py", "--delay", str(self.args.legit_delay),
                         "--trace", str(ROOT / "traces" / "demo_legit.jsonl"))
@@ -288,19 +287,19 @@ class Runner:
         row = s["stream"][0] if s["stream"] else {}
         if row.get("level") == "soft":
             if row.get("rule_id") == "off_hours_amount":
-                text = ("Layer 1: off hours and a large amount. Soft stop. "
-                        "The payment is on hold.")
+                text = ("Layer 1: a large amount at night. Soft stop: "
+                        "the payment is on hold.")
             else:
-                text = f"Layer 1: {row['rule_id']}. Soft stop. The payment is on hold."
+                text = f"Layer 1: rule {row['rule_id']}. Soft stop: the payment is on hold."
         elif row.get("level") == "hard":
-            text = f"Layer 1: hard stop by {row['rule_id']}. Jev is not asked."
+            text = f"Layer 1: hard stop by rule {row['rule_id']}. Jev is not asked."
         else:
-            text = "Layer 1: no rule fires, the payment goes straight through."
+            text = "Layer 1: no rule fires. The payment goes straight through."
         self.say(text, spotlight="layer1")
         if row.get("level") == "soft":
             s = self.wait_for(lambda x: (x["layers"]["layer2"]["last"] or {}).get("id") != jev0, 10)
-            self.say("Layer 2: Jev gets aggregated facts and answers two questions with "
-                     "probabilities.", spotlight="layer2")
+            self.say("Layer 2: Jev reads the facts and answers two questions. Does it fit the "
+                     "history? Does it match the invoice?", spotlight="layer2")
             try:
                 p.wait(timeout=15)
             except subprocess.TimeoutExpired:
@@ -309,17 +308,17 @@ class Runner:
             l2 = self.state()["layers"]["layer2"]
             t = min(l2["t_history"], l2["t_basis"])
             if j is None:
-                self.say("Jev gave no answer, the payment stays on hold: fail closed.",
+                self.say("Jev gave no answer, so the payment stays on hold.",
                          spotlight="layer2")
             elif j.get("outcome") == "released":
-                self.say(f"Both are above {t:.2f}, so the breaker releases the payment. "
-                         "The thresholds live in our code, not in the model.", spotlight="layer2")
+                self.say(f"Both scores are above {t:.2f}, so the breaker releases the payment. "
+                         "The threshold is in our code, not in Jev.", spotlight="layer2")
                 lat = j.get("latency_ms") or 0
                 first = "Released in under a second." if lat < 1000 else f"Released in {lat:,} ms."
                 self.say(f"{first} Jev may only release a soft stop. "
                          "It can never override a hard stop.", spotlight="counters")
             elif j.get("outcome") == "no_answer":
-                self.say("No answer in time, the payment stays on hold: fail closed.",
+                self.say("Jev did not answer in time, so the payment stays on hold.",
                          spotlight="layer2")
             else:
                 self.say(f"Jev answered {j.get('fits_history', 0):.2f} and "
@@ -329,9 +328,9 @@ class Runner:
         self.done(2)
 
     def case3(self) -> None:
-        self.explain(3, ["Case 3: a stolen API key. At 02:00 an attacker starts paying three "
-                         "beneficiaries that were approved long ago and never paid.",
-                         "Watch the leak, then the stop."])
+        self.explain(3, ["Case 3: a stolen API key. At 02:00 the attacker pays three dormant "
+                         "beneficiaries: approved long ago, never paid.",
+                         "Watch: a few payments leak first. Then the breaker stops the rest."])
         s0 = self.state()
         last_id = s0["stream"][0]["id"] if s0["stream"] else ""
         jev0 = (s0["layers"]["layer2"]["last"] or {}).get("id")
@@ -349,21 +348,21 @@ class Runner:
         rows = new_rows(s)
         leaks = [r for r in rows if r["status"] == "executed"]
         if leaks:
-            self.say(f"{word(len(leaks))} small payments, {aed(leaks[0]['amount_aed'])} each, "
-                     "below every threshold. They pass. No rule covers dormant beneficiaries yet."
+            self.say(f"{word(len(leaks))} payments of {aed(leaks[0]['amount_aed'])} pass, each "
+                     "under every limit. No rule covers dormant beneficiaries yet."
                      if len({r["amount_aed"] for r in leaks}) == 1 else
                      f"{word(len(leaks))} small payments, {aed(sum(r['amount_aed'] for r in leaks))}"
-                     " in total, below every threshold. They pass.", spotlight="stream")
+                     " in total, pass, each under every limit.", spotlight="stream")
         soft = [r for r in rows if r["level"] == "soft"]
         if soft:
             j = self.wait_jev_call(jev0)
             s = self.state()
             if j is None:
-                jtext = "Jev gave no answer. The payments stay on hold: fail closed."
+                jtext = "Jev gave no answer, so the payments stay on hold."
             elif j.get("outcome") == "kept":
-                jtext = "Jev says this does not fit the history. The payments stay on hold."
+                jtext = "Jev says this does not fit the history, so the payments stay on hold."
             elif j.get("outcome") == "no_answer":
-                jtext = "Jev gave no answer in time. The payments stay on hold: fail closed."
+                jtext = "Jev did not answer in time, so the payments stay on hold."
             else:
                 jtext = "Jev released it."
             self.say(f"The burst starts. Soft stop. {jtext}", spotlight="layer2")
@@ -380,18 +379,21 @@ class Runner:
             rule = RULE_NAMES.get(inc.get("rule_id"), f"rule {inc.get('rule_id')}")
             secs = round((s["counters"]["violation_to_pause_ms"] or 0) / 1000)
             who = f"Payment {trip}" if trip else "A payment"
-            self.say(f"{who} trips {rule}. Hard stop. The key is paused {secs} second"
+            self.say(f"{who} trips {rule}. Hard stop. The API key is paused {secs} second"
                      f"{'' if secs == 1 else 's'} after the first violation.", spotlight="key")
             self.resume_traffic(p)
         p.wait()
         c = self.state()["counters"]
-        self.say(f"Every further payment is held. {aed(c['stopped']['aed'])} stopped. "
-                 f"{aed(c['leaked']['aed'])} leaked.", spotlight="counters")
+        self.say(f"Every later payment is held. {aed(c['stopped']['aed'])} stopped. "
+                 f"But {aed(c['leaked']['aed'])} leaked.", spotlight="counters")
         self.done(3)
 
     def case4(self) -> None:
         self.explain(4, ["Case 4: closing the gap. The incident wakes Devin, a coding agent.",
-                         "Devin never moves money. It investigates and proposes."])
+                         "Devin never moves money. It investigates, gives a verdict and "
+                         "proposes a new rule.",
+                         "Devin also gets a Graphify code graph of this repo, to find every code "
+                         "path that can send money."])
         s = self.state()
         inc = s["incident"]
         if not inc:
@@ -406,9 +408,9 @@ class Runner:
             v = VERDICT_WORDS.get(inc["verdict"], inc["verdict"])
             req = inc.get("requested_verdict")
             if req and req != inc["verdict"]:
-                v = f"{VERDICT_WORDS.get(req, req)}, downgraded to {v} by the re-check"
-            self.say(f"Verdict: {v}. The breaker executes the verdict and would re-check any "
-                     "release against the database.", spotlight="incident")
+                v = f"{VERDICT_WORDS.get(req, req)}, changed to {v} by the re-check"
+            self.say(f"Verdict: {v}. The breaker executes it, and re-checks any release "
+                     "against the database.", spotlight="incident")
         if inc["pr_url"]:
             mins = inc.get("pause_to_pr_min")
             if mins is None:
@@ -428,17 +430,19 @@ class Runner:
             s = self.wait_for(lambda x: x["layers"]["layer3"]["webhook"]["status"] != "pending", 5)
             wh = s["layers"]["layer3"]["webhook"]
         if wh["status"] == "sent":
-            self.say(f"Webhook sent to Devin for {inc['id']}.", spotlight="layer3")
+            self.say(f"Webhook sent. Devin starts on incident {inc['id']}.", spotlight="layer3")
         elif wh["status"] == "failed":
-            self.say(f"The webhook to Devin failed for {inc['id']}. The holds stay.",
+            self.say(f"The webhook to Devin failed for {inc['id']}. The payments stay on hold.",
                      spotlight="layer3")
         elif wh["status"] == "not_configured":
-            self.say("No webhook configured, offline mode.", spotlight="layer3")
+            self.say("Offline mode: no webhook is configured, so Devin is not called.",
+                     spotlight="layer3")
         else:
-            self.say(f"No webhook outcome logged for {inc['id']} yet.", spotlight="layer3")
+            self.say(f"No webhook result for {inc['id']} yet.", spotlight="layer3")
         self.start_watcher(s)
         if not self.args.auto:
-            print("  waiting for Devin: f + Enter = use the rehearsal PR, s + Enter = skip")
+            print("  waiting for Devin. f + Enter: use the rehearsal pull request."
+                  " s + Enter: skip the wait.")
         started = inc.get("tripped_wall_at")
         t0 = time.time()
         try:
@@ -468,8 +472,9 @@ class Runner:
                 last_caption = time.monotonic()
             if self.args.auto:
                 if self.watcher is None:
-                    reason = ("no webhook configured, offline mode"
-                              if wh["status"] == "not_configured" else "no PR watcher running")
+                    reason = ("offline mode"
+                              if wh["status"] == "not_configured"
+                              else "the PR watcher is not running")
                     self.sleep(1.0)
                     self.say(f"No pull request yet: {reason}.", spotlight="layer3")
                     return
@@ -485,7 +490,7 @@ class Runner:
                 return
             if key == "f" and self.fallback(inc["id"]):
                 return
-            print("  f + Enter = use the rehearsal PR, s + Enter = skip")
+            print("  f + Enter: use the rehearsal pull request. s + Enter: skip the wait.")
 
     def fallback(self, incident_id: str) -> bool:
         """Apply the verdict of the rehearsal run named in .state/pr/latest.json."""
@@ -544,7 +549,9 @@ class Runner:
 
     def case5(self) -> None:
         self.explain(5, ["Case 5: proof. We replay the same attack and the same normal day "
-                         "against the new rule."])
+                         "against the new rule.",
+                         "Watch the attack line go from FAIL to PASS. The normal day must pass "
+                         "both times."])
         rules_dir, pr = None, None
         try:
             pr = json.loads(Path(self.args.pr_state).read_text())
@@ -552,39 +559,42 @@ class Runner:
             rules_dir = d if any(d.glob("*.sql")) else None
         except (OSError, ValueError, KeyError, TypeError):
             pr = None
-        title = "Replay: the same attack and the same normal day on a fresh instance"
-        self.present(caption="Replaying the attack against the rules in the repository.",
+        title = "Replay on a fresh copy: the same attack and the same normal day"
+        self.present(caption="First the replay with the current rules from the repository.",
                      spotlight="stream",
-                     panel={"title": title, "text": "Before, rules in the repository:\n\n"
-                                                    "running ..."})
+                     panel={"title": title,
+                            "text": "Before: current rules from the repository\n\n"
+                                    "running ..."})
         before, btext = self.replay(self.before_rules)
-        text = "Before, rules in the repository:\n" + btext
+        text = "Before: current rules from the repository\n" + btext
         self.present(panel={"title": title, "text": text})
         if before:
             a = before["attack"]
-            self.say(f"Before the new rule: {a['executed']} of {a['sent']} attack payments were "
+            self.say(f"Before the new rule: {a['executed']} of {a['sent']} attack payments "
                      "executed.", spotlight="stream")
         if not rules_dir:
             self.say("The fix is not available yet: there is no pull request with new rules "
                      "to replay against.", spotlight="stream")
             self.done(5)
             return
-        label = f"After, rules from pull request {pr_short(pr.get('url'))}:"
-        self.present(caption="Now the same replay against the rules from the pull request.",
+        label = f"After: rules from pull request {pr_short(pr.get('url'))}"
+        self.present(caption="Now the same replay with the rules from the pull request.",
                      panel={"title": title, "text": text + "\n\n" + label + "\n\nrunning ..."})
         after, atext = self.replay(rules_dir)
         self.present(panel={"title": title, "text": text + "\n\n" + label + "\n" + atext})
         if after:
             a, lg = after["attack"], after["legit"]
             if a["executed"] == 0 and lg["executed"] == lg["sent"]:
-                self.say(f"After: {a['executed']} of {a['sent']}. And legit traffic is still "
-                         f"{lg['executed']} of {lg['sent']}.", spotlight="stream")
+                self.say(f"After the new rule: {a['executed']} of {a['sent']} attack payments "
+                         f"executed. Legitimate payments: still {lg['executed']} of {lg['sent']}.",
+                         spotlight="stream")
                 leaked = self.state()["counters"]["leaked"]["aed"]
-                self.say(f"{aed(leaked)} leak closed. {word(lg['held'])} legitimate payments "
-                         "held.", spotlight="stream")
+                self.say(f"The {aed(leaked)} leak is closed. {word(lg['held'])} legitimate "
+                         "payments are held.", spotlight="stream")
             else:
-                self.say(f"After: {a['executed']} of {a['sent']} attack payments executed, "
-                         f"{lg['executed']} of {lg['sent']} legit. The fix does not pass yet.",
+                self.say(f"After the new rule: {a['executed']} of {a['sent']} attack payments "
+                         f"executed, {lg['executed']} of {lg['sent']} legitimate. The fix does "
+                         "not pass yet.",
                          spotlight="stream")
         self.done(5)
 
@@ -597,14 +607,14 @@ class Runner:
                          step_done=[])
             self.beat("start the tour")
             self.tour()
-            self.beat("case 1")
+            self.beat("explain case 1")
         cases = {1: self.case1, 2: self.case2, 3: self.case3, 4: self.case4, 5: self.case5}
         for case in range(start, 6):
             if case == 4:
                 self.start_watcher(self.state())
             cases[case]()
             if case < 5:
-                self.beat(f"case {case + 1}")
+                self.beat(f"explain case {case + 1}")
         self.present(spotlight=None)
         self.beat("end the demo (clears the subtitles and the spotlight)")
         return 0
