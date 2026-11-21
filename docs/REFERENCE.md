@@ -1,4 +1,6 @@
-# TrustGap
+# TrustGap reference
+
+The product overview and the quick start are in the [README](../README.md).
 
 TrustGap is a payment circuit breaker: a smart rate limiter in front of a toy bank payment API.
 It counts money and client behaviour, not requests, and puts suspicious payments on a reversible hold.
