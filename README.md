@@ -23,6 +23,11 @@ Run everything with `.venv/bin/python` (or activate the venv).
 .venv/bin/python scripts/traffic_legit.py             # 42 daytime payments, expect 42 executed
 .venv/bin/python scripts/traffic_soft.py              # 02:10 soft case, run before the attack, expect executed (Jev releases)
 .venv/bin/python scripts/traffic_attack.py            # 02:00 attack, expect 6 executed, 36 held
+scripts/apply_verdict.sh inc_0001 verdict.json        # send a verdict to the breaker
+scripts/facts.sh held inc_0001                        # read-only facts for the investigator
+scripts/infra_check.sh                                # was our own infrastructure changed?
+scripts/replay.sh                                     # replay legit + latest incident on a fresh instance
+scripts/change_request.sh "<description>"             # regenerate rules/rules.lock, add a CHANGELOG.md entry
 ```
 
 `traffic_legit.py` rewrites `fixtures/legit.jsonl`.
@@ -83,6 +88,72 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
 | `SOFT_MIN_AMOUNT_AED` | `5000` | rules, bound as `:soft_min_amount_aed` |
 | `HOLD_TTL_MIN` | `30` | not used before milestone 6 |
 | `DEMO_DATE` | `2026-11-21` | seed, traffic scripts |
+
+## Incidents and verdicts
+
+When an incident opens, the breaker POSTs a `breaker.tripped` event (SPEC section 9) to `DEVIN_WEBHOOK_URL`, with the header `X-Webhook-Secret: $DEVIN_WEBHOOK_SECRET`.
+No webhook is sent when `DEVIN_WEBHOOK_URL` is unset or empty.
+It is sent after the tripping transaction has committed, from a background thread, with a 3 second timeout.
+Success or failure is logged as an `events` row; a failure never changes the hold, the pause or the HTTP response.
+The webhook reports the Jev model from `JEV_MODEL` (default `jev-1.13.0`).
+
+`POST /incidents/{id}/verdict` (header `X-Admin-Token`) takes the SPEC body:
+
+```json
+{"incident_id": "inc_0001", "verdict": "contact_client", "reason": "...",
+ "evidence": {"basis_ids": [], "prior_payment_ids": []}, "pr_url": "https://..."}
+```
+
+`scripts/apply_verdict.sh <incident_id> <verdict.json>` sends it with `curl` to `BREAKER_URL` with `ADMIN_TOKEN`, prints the response and exits 1 on a non-2xx status.
+Unknown incident: 404.
+Bad body (unknown verdict, missing `reason`, unknown field, `incident_id` not equal to the path id): 422.
+Closed incident: 409.
+
+| Verdict | What the breaker does |
+|---|---|
+| `release` | Re-checks every held payment of the incident, one at a time: the beneficiary needs a bank payment before the hold, and an approved, unused basis for the same beneficiary with exactly the same amount (the payment's own `basis_id` if it has one). Passing payments go to the bank with that basis, so one basis releases at most one payment. If any payment fails the check, it stays held, the verdict is stored as `contact_client` and the key stays paused. If all pass, the key returns to `normal` and the incident is closed. |
+| `hold_until_morning` | Stores `hold_until` = the next 08:00 (request clock) on the incident. Holds stay. |
+| `contact_client` | Event "client contacted by second channel (simulated)". Holds stay. |
+| `escalate_bank_security` | Event "bank security paged (simulated)". Key stays paused, holds stay. |
+
+The `evidence` ids are stored but never trusted; the database decides.
+`GET /state` returns `pause_to_pr_min` for each incident: real minutes from the pause to the verdict, null until a verdict with a `pr_url` arrives.
+
+## Investigator scripts
+
+The investigator (Devin) works on its own machine with a fresh clone and no access to the live databases or the breaker.
+So every script runs on macOS (bash 3.2, BSD tools) and Linux, and does date math, checksums and JSON in Python.
+The wrappers use `$PYTHON` if set, else `.venv/bin/python` if it exists, else `python3`, and stop with "run: pip install -r requirements.txt" if FastAPI is not importable.
+
+| Script | What it does |
+|---|---|
+| `scripts/facts.sh <query> [args]` | Read-only queries: `key-history [api_key_id]`, `beneficiary <id>`, `bases <beneficiary_id>`, `held <incident_id>`. Uses `sqlite3 -readonly` when installed (3.33 or newer), else Python `sqlite3` with `mode=ro`; `FACTS_ENGINE=cli` or `python` forces one. Same output either way. |
+| `scripts/infra_check.sh` | (a) commits of the last 24 hours in `rules/` (except `rules/rules.lock`), `breaker/`, `.env.example` and `requirements.txt`, each COVERED or NOT COVERED by `CHANGELOG.md`; (b) uncommitted changes there; (c) rule checksums against `rules/rules.lock`; (d) API keys created in the 24 hours before the latest incident; (e) breaker `/health` (not reachable is only a note). Exit 1 if (a) to (d) show a change without a change request. |
+| `scripts/replay.sh [incident_id]` | Fresh seed in a temp dir, bank and breaker on free ports with `JEV_MODE=stub` and no webhook, replays `fixtures/legit.jsonl` and then the incident trace (default: the latest), prints the result table, exits 0 only if no attack payment executed and every legit payment executed. |
+| `scripts/change_request.sh "<description>"` | The only writer of `CHANGELOG.md` and `rules/rules.lock`. Regenerates the lock and appends an entry with the short hashes of all commits in monitored paths not listed yet. Refuses to run with uncommitted changes there. |
+| `scripts/replaylib.py` | The shared Python module behind these scripts and the tests: seed into a folder, start services on free ports, replay a trace, stop services by pid. See its docstring and `rules/README.md` for a regression test example. |
+
+Databases for `facts.sh` and `infra_check.sh`: `BANK_DB` and `BREAKER_DB` if set and both exist, else `bank.db` and `breaker.db` in the repo root if both exist, else a snapshot.
+The snapshot is built in `.state/` (gitignored): fresh seed, services in stub mode with no webhook, replay of `fixtures/legit.jsonl` and then the latest incident trace.
+The seed is deterministic, so this reproduces the incident; one line on stderr says that a snapshot was built.
+`docs/devin_prompt.md` is the prompt for the Devin automation, copied unchanged from SPEC section 10.
+`rules/README.md` explains the rule format to an agent that adds a rule.
+
+## Before the demo
+
+Every commit of this project is younger than 24 hours, so `scripts/infra_check.sh` reports clean only after the change log covers them.
+After the last code change is merged and committed:
+
+```sh
+scripts/change_request.sh "Demo build"
+git add CHANGELOG.md rules/rules.lock
+git commit -m "Record change request for the demo build"
+scripts/infra_check.sh        # must print "infra check: clean"
+```
+
+The commit must touch only those two files.
+Never edit `CHANGELOG.md` or `rules/rules.lock` by hand.
+After merging a pull request that changes a rule, run the same steps again.
 
 ## Choices left open by the spec
 
@@ -170,3 +241,35 @@ The services do not read `.env` themselves; load it with `set -a; . ./.env; set 
   Admin release does not re-check rules; it is an explicit human override.
 - Trace file writes run inside the `BEGIN IMMEDIATE` transaction, so lines are in commit order; a failed write logs an `error` event and never undoes a hold.
 - `fixtures/legit.jsonl` and `fixtures/incidents/inc_0001.jsonl` are committed from a clean run (fresh seed, legit, attack), for the replay script and the investigator.
+
+### Incidents, verdicts and investigator scripts
+
+- Held payments are tied to an incident by a new column `reservations.incident_id`.
+  When an incident opens, the key's held payments of the last hour (the soft stops and the tripping payment) join it; every later hold of the key joins it while it is open.
+- `incidents` has new columns: `tripped_wall_at` and `verdict_wall_at` (real time, UTC ISO 8601), `requested_verdict` (as sent), `reason`, `evidence_json`, `hold_until`.
+  `verdict` is the verdict as executed, so a downgraded `release` shows `verdict = contact_client`, `requested_verdict = release`.
+  A later verdict on the same open incident overwrites these fields; `pr_url` keeps its last non-empty value.
+- Only `release` with every payment passing closes the incident.
+  The other verdicts leave it open, so a second verdict can follow; admin resume still closes it.
+- A verdict request without `X-Sim-Time` uses the request clock of the incident: the latest request time of its key.
+  That time drives `hold_until`, `verdict_at`, the event times and the `X-Sim-Time` of payments a `release` sends to the bank.
+- `release` re-check details: "prior payment" means a bank payment to the beneficiary before the hold was created, so in the demo the two leaked phase A payments count for each dormant beneficiary, and only the missing basis keeps them held.
+  A basis carried by another payment in flight in the breaker (`pending` or `released`) is not available.
+  Verdicts run one at a time (a lock in the breaker process), and each payment moves from `held` to `released` in its own `BEGIN IMMEDIATE` transaction before it is sent.
+  A payment that the bank rejects or cannot be reached for counts as not passed.
+- The verdict body is strict: unknown fields are rejected, `reason` is 1 to 2000 characters, `pr_url` is optional and must start with `http://` or `https://`.
+- Webhook: the window length is read from the tripping rule's first `datetime(:now, '-N unit')` (1 hour if none); `count` and `sum_aed` count the same statuses as the rules (`pending`, `executed`, `held`, `released`).
+  `level` is the level stored on the tripping payment.
+  `sample_requests` are the first 20 of the key's requests in the hour up to `tripped_at`, in trace format, taken from the database.
+  `trace_file` is relative to the repo root when the file is inside the repo, else the configured path.
+  `X-Webhook-Secret` is only sent when `DEVIN_WEBHOOK_SECRET` is set.
+  Webhook outcomes are `events` rows of kind `webhook` (sent) or `error` (failed), timed at the incident's `tripped_at`.
+- `facts.sh`: "now" is the request clock, the latest request seen by the breaker (real Gulf time if there is none); `key-history` without an argument uses the key of the latest incident.
+  With the CLI, arguments are bound with `.parameter set` after the `^[A-Za-z0-9_]+$` check; Python binds them as parameters.
+- The snapshot replays the incident trace with the rule files of the commit that last changed that trace (`git show`), so it still shows the incident as it happened after a new rule is added.
+  It falls back to the working tree rules without git, warns on stderr if replayed outcomes differ from the trace, and is reused until the latest incident trace changes.
+- `infra_check.sh`: commit times are committer dates; a commit is COVERED when a hex token of 7 or more characters in `CHANGELOG.md` is a prefix of its hash; a key is "named" when its id appears anywhere in `CHANGELOG.md`.
+  Untracked files in monitored paths count as uncommitted changes.
+  `rules/rules.lock` lists `sha256  file name` for `rules/*.sql` only.
+- `replay.sh` exits 2 on a usage error (unknown incident id), 1 when a criterion fails.
+  It stops its services through a pid file and a shell `trap`, and Python stops them too.

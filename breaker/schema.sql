@@ -16,11 +16,13 @@ CREATE TABLE reservations (
     payment_id     TEXT,
     created_at     TEXT NOT NULL,
     decided_at     TEXT,
-    decided_by     TEXT
+    decided_by     TEXT,
+    incident_id    TEXT  -- set when a hold attaches to an open incident
 );
 
 CREATE INDEX ix_reservations_key ON reservations (api_key_id, created_at);
 CREATE INDEX ix_reservations_account ON reservations (account_id, created_at);
+CREATE INDEX ix_reservations_incident ON reservations (incident_id, status);
 
 CREATE TABLE key_state (
     api_key_id  TEXT PRIMARY KEY,
@@ -40,7 +42,15 @@ CREATE TABLE incidents (
     pr_url                TEXT,
     status                TEXT NOT NULL DEFAULT 'open',
     violation_to_pause_ms INTEGER,
-    trace_file            TEXT
+    trace_file            TEXT,
+    -- Real time (UTC ISO 8601), independent of the simulated request clock.
+    tripped_wall_at       TEXT,
+    verdict_wall_at       TEXT,
+    -- Last verdict received: requested_verdict as sent, verdict as executed.
+    requested_verdict     TEXT,
+    reason                TEXT,
+    evidence_json         TEXT,
+    hold_until            TEXT
 );
 
 CREATE TABLE jev_calls (

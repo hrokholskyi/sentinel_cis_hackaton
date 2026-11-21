@@ -11,15 +11,16 @@ Pipeline for one payout (SPEC section 6):
 import hmac
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from breaker import engine, incidents, jev
 
@@ -176,6 +177,7 @@ def payout(
             raise HTTPException(401, "invalid API key")
         key_id = key["id"]
 
+        tripped = None  # incident created by this request, for the webhook after commit
         conn.execute("BEGIN IMMEDIATE")
         try:
             state = engine.key_state(conn, key_id, now)
@@ -206,6 +208,7 @@ def payout(
                     inc = incidents.create(conn, api_key_id=key_id, rule_id=chosen.rule_id,
                                            now=now, processing_ms=(time.perf_counter() - t0) * 1000,
                                            incidents_dir=INCIDENTS_DIR)
+                    tripped = inc["id"]
                     engine.add_event(conn, now, "incident",
                                      f"incident {inc['id']} opened: {chosen.rule_id} ({chosen.detail})")
                 else:
@@ -218,6 +221,9 @@ def payout(
         except BaseException:
             conn.execute("ROLLBACK")
             raise
+        if tripped:
+            incidents.notify(connect, tripped, next((r.sql for r in RULES
+                                                     if r.id == chosen.rule_id), None))
 
         res = engine.get_reservation(conn, res_id)
         if chosen and chosen.level == "hard":
@@ -299,6 +305,117 @@ def reject_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
         conn.close()
 
 
+# --- verdicts (SPEC section 9) ----------------------------------------------
+
+class Evidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    basis_ids: list[str] = Field(default_factory=list, max_length=200)
+    prior_payment_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class Verdict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    incident_id: str
+    verdict: Literal["release", "hold_until_morning", "contact_client", "escalate_bank_security"]
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence: Evidence = Field(default_factory=Evidence)
+    pr_url: Optional[str] = Field(default=None, max_length=500, pattern=r"^https?://\S+$")
+
+
+VERDICT_LOCK = threading.Lock()  # one verdict at a time, so a basis can only release once
+
+
+def _release(conn, inc, now: str, sim_time: str) -> tuple[list, list]:
+    """Re-check every held payment of the incident, one at a time, and send those that pass.
+
+    The evidence in the verdict body is never trusted: the database decides.
+    """
+    released, kept = [], []
+    secret = conn.execute("SELECT secret FROM bank.api_keys WHERE id = ?",
+                          (inc["api_key_id"],)).fetchone()
+    for row in incidents.held_payments(conn, inc["id"]):
+        conn.execute("BEGIN IMMEDIATE")
+        res = engine.get_reservation(conn, row["id"])
+        if res["status"] != "held":
+            conn.execute("ROLLBACK")
+            continue
+        basis_id, why = incidents.recheck(conn, res) if secret else (None, "API key is gone")
+        if basis_id is None:
+            conn.execute("ROLLBACK")
+            kept.append({"reservation_id": res["id"], "why": why})
+            continue
+        engine.set_status(conn, res["id"], "released", now, "verdict", basis_id=basis_id)
+        conn.execute("COMMIT")
+        forward(conn, engine.get_reservation(conn, res["id"]), secret["secret"], sim_time, now,
+                "verdict")
+        after = engine.get_reservation(conn, res["id"])
+        if after["status"] == "executed":
+            released.append(res["id"])
+        else:
+            kept.append({"reservation_id": res["id"], "why": f"{after['status']}: {after['detail']}"})
+    return released, kept
+
+
+@app.post("/incidents/{incident_id}/verdict", dependencies=[Depends(require_admin)])
+def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Header(default=None)):
+    if body.incident_id != incident_id:
+        raise HTTPException(422, "incident_id in the body does not match the path")
+    with VERDICT_LOCK:
+        conn = connect()
+        try:
+            inc = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+            if inc is None:
+                raise HTTPException(404, "unknown incident")
+            if inc["status"] != "open":
+                raise HTTPException(409, f"incident is {inc['status']}")
+            now = now_local(x_sim_time) if x_sim_time else incidents.request_clock(conn, inc)
+            requested, final, status, hold_until = body.verdict, body.verdict, "open", None
+            released, kept = [], []
+            notes = []
+            if requested == "release":
+                released, kept = _release(conn, inc, now, incidents.iso_local(now))
+                if kept:
+                    final = "contact_client"
+                    notes.append(("verdict", f"release verdict for {incident_id} downgraded to "
+                                  f"contact_client: {len(released)} sent, {len(kept)} still held"))
+                    notes.append(("notify", f"client contacted by second channel (simulated) "
+                                  f"for {incident_id}"))
+                else:
+                    status = "closed"
+                    notes.append(("verdict", f"release verdict for {incident_id}: all "
+                                  f"{len(released)} held payments re-checked and sent"))
+            elif requested == "hold_until_morning":
+                hold_until = incidents.next_morning(now)
+                notes.append(("verdict", f"holds of {incident_id} extended until {hold_until}"))
+            elif requested == "contact_client":
+                notes.append(("notify", f"client contacted by second channel (simulated) "
+                              f"for {incident_id}"))
+            else:
+                notes.append(("notify", f"bank security paged (simulated) for {incident_id}"))
+
+            conn.execute("BEGIN IMMEDIATE")
+            incidents.record_verdict(conn, incident_id, requested=requested, verdict=final,
+                                     reason=body.reason, evidence=body.evidence.model_dump(),
+                                     pr_url=body.pr_url, now=now, status=status,
+                                     hold_until=hold_until)
+            if status == "closed":
+                engine.set_key_state(conn, inc["api_key_id"], "normal", now, None)
+                notes.append(("admin", f"key {inc['api_key_id']} back to normal"))
+            engine.add_event(conn, now, "verdict", f"verdict {requested} received for {incident_id}")
+            for kind, text in notes:
+                engine.add_event(conn, now, kind, text)
+            conn.execute("COMMIT")
+            key = engine.key_state(conn, inc["api_key_id"], now)
+            out = dict(conn.execute("SELECT * FROM incidents WHERE id = ?",
+                                    (incident_id,)).fetchone())
+            return {"incident_id": incident_id, "requested_verdict": requested, "verdict": final,
+                    "status": out["status"], "key_state": key["state"],
+                    "hold_until": out["hold_until"], "released": released, "still_held": kept,
+                    "held_count": len(incidents.held_payments(conn, incident_id))}
+        finally:
+            conn.close()
+
+
 # --- state ------------------------------------------------------------------
 
 @app.get("/state")
@@ -313,6 +430,8 @@ def state():
             counts[r["status"]] = r["n"]
             amounts[r["status"]] = incidents.num(r["s"])
         incs = [dict(r) for r in conn.execute("SELECT * FROM incidents ORDER BY id")]
+        for i in incs:
+            i["pause_to_pr_min"] = incidents.pause_to_pr_min(i)
         open_inc = next((i for i in reversed(incs) if i["status"] == "open"), None)
         events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 10")]
         return {"keys": keys, "reservations": counts, "reservations_aed": amounts,
