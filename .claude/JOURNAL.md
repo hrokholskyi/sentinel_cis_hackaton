@@ -74,3 +74,14 @@ That is exactly what SPEC section 9 assumed, so the breaker needs no extra sende
 Rejected: the v3 sessions API (`POST /v3/organizations/{org_id}/sessions`), because it needs an org id, a service user key and a second sender in the breaker; it stays the fallback if the automation does not work.
 The webhook call does not return a session id, and Devin has no completion callback, so the PR is detected by polling GitHub for a new pull request that contains `verdict.json`, then the verdict is applied to the breaker.
 Not verified: nothing was called on the Devin side yet, and time from trigger to PR is undocumented.
+
+## 2026-11-21 - Demo logistics decided by Roman
+Verdict return: a watcher polls GitHub for Devin's PR, reads `verdict.json` and applies it (rejected: applying by hand on stage).
+Devin on stage: start it live and fall back to a PR from a rehearsal run.
+Rehearsal: the main agent may trigger one real Devin run once M4 is merged and the webhook URL is in `.env`; budget is about 200 USD of Devin credits.
+The browser preview stays in the temp folder, not in the repo.
+
+## 2026-11-21 - Real names in the preview, against SPEC section 1
+Roman asked for the bank to be shown as ADCB and the client as Microsoft, which overrides the SPEC rule "no real banks, names".
+Applied to the preview page only for now, text only, no logos, with a "fictional scenario" tag.
+Open: whether the seed data and the real dashboard get the same names.
