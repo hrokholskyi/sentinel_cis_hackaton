@@ -36,3 +36,9 @@
   - df8f4a4 Check the Host header, use per-run demo tokens, pass the incident to the PR watcher
   - 12a6c55 Document the security hardening
 - rules/rules.lock: 6 rule files.
+
+## 2026-11-21 - Stage robustness fixes: rehearsal verdict source, public trace path, watcher retries, runner and launcher changes
+
+- Commits: 7ae5992.
+  - 7ae5992 Mark rehearsal verdicts, report the public trace path and the real Jev model
+- rules/rules.lock: 6 rule files.
