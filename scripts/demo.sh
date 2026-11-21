@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The one command for the stage: fresh seed, bank and breaker, dashboard, guided demo.
-# Usage: scripts/demo.sh [--no-open] [demo.py options, e.g. --auto, --from 3, --no-tour]
+# Usage: scripts/demo.sh [--no-open] [--no-webhook] [demo.py options, e.g. --auto, --from 3, --no-tour]
 #
 # Loads .env if present. Picks JEV_MODE=live when TYPESAFE_API_KEY is set and JEV_MODE is
 # not, else stub. Reseeds bank.db and breaker.db (BANK_DB, BREAKER_DB), starts the bank and
@@ -27,7 +27,12 @@ export PYTHON="$PY"
 OPEN=1
 ARGS=()
 for a in "$@"; do
-    if [ "$a" = "--no-open" ]; then OPEN=0; else ARGS+=("$a"); fi
+    case "$a" in
+        --no-open) OPEN=0 ;;
+        # Rehearse without starting a Devin session, even when .env has the webhook
+        --no-webhook) unset DEVIN_WEBHOOK_URL DEVIN_WEBHOOK_SECRET ;;
+        *) ARGS+=("$a") ;;
+    esac
 done
 
 port_of() {
