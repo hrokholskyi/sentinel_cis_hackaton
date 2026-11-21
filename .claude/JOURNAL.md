@@ -241,3 +241,15 @@ The dashboard's "pause to PR" shows 52 minutes for this run, because the stack w
 Deck: the Devin slide keeps "About 10 min"; the measured "9 min 25 s" update is not published.
 Video and preview keep the simulated verdict "contact the client", although real Devin chose "escalate to bank security"; both are labelled as simulated and the README states the difference.
 The full video is published as GitHub release `demo-video-v1` (4K 74 MB, 1080p 27 MB); the release notes say it is rendered from the simulated preview.
+
+## 2026-11-21 - Stage fixes merged, final checks done
+All 14 stage findings are fixed; 109 tests pass.
+A rehearsal verdict is now marked with the header `X-Verdict-Source: rehearsal`, so the screen says "from the rehearsal run" and shows no minutes.
+`demo.sh` writes the incident trace to `.state/demo/incidents` and the webhook still names the committed path, so a stage run leaves git clean (verified).
+The services stay up after the last beat until `q`; buffered key presses are discarded; `--keep-data --from N` continues after a crash; values on the command line win over `.env`.
+A Jev call with no answer is called a timeout when its latency is at least 95% of `JEV_TIMEOUT_S`, otherwise an error, because the breaker logs no error text.
+Constraint found: a child process of the runner could take over the terminal in a pseudo terminal, so all children get stdin from `/dev/null`.
+Final guided run on the default ports with live Jev and the new code: 42 of 42, soft case released in 254 ms, attack 6 leaked and 36 held.
+Devin pushed two more commits to PR #1 six minutes after opening it (evidence field in `verdict.json`, and the rule now also requires the basis amount to match); the replay with the updated rules still passes.
+`docs/RUNSHEET.md` holds the 5-minute run sheet, plan B and the pre-stage checklist; `.state/pr/rehearsal.json` points at PR #1 for the `f` fallback.
+The README changes of the stage-fix branch were re-applied to `docs/REFERENCE.md` with a path rewrite, which worked because the move was byte-identical.
