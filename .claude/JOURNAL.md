@@ -206,3 +206,12 @@ Decision: one fix agent handles these (findings A to N in its brief).
 Measured timing: 2 min 40 s without the tour, 3 min 32 s with it; the tour is the first thing to cut for a 5-minute slot.
 Rejected earlier decision: keeping the incident trace in `fixtures/incidents/` during stage runs; it goes to `.state/demo/incidents` and the webhook keeps naming the committed path.
 Still true: there is no finished Devin pull request, so the Devin step has no fallback yet.
+
+## 2026-11-21 - Devin API gives visibility: both rehearsals died on repo access in 45 seconds
+Roman pointed to the Devin service user key and org id in the sibling project `ghost-defender`; both are now in this project's gitignored `.env` (same organisation as the webhook).
+With `GET /v3/organizations/{org}/sessions` and `.../sessions/{id}/messages` the main agent can read Devin's side without Roman pasting messages.
+Measured on run 2: session created 1 second after the pause, Devin acknowledged the incident 3 seconds later, and reported "blocked" 44 seconds after the start.
+Cause in Devin's own words: clone through its git proxy fails with HTTP 403 for `hrokholskyi/sentinel_cis_hackaton`.
+The same Devin organisation opens pull requests on `hrokholskyi/ghost_defender_cis_hackathon`, so the Devin GitHub app is installed but this repository is not in its allowed list.
+Wrong assumption replaced: starting the session through the API with the same service user does not fix access; the repository must be added to the GitHub app installation.
+Plan: once access is granted, start the rehearsal session through the v3 API with the same prompt and incident record, then build the API trigger into the breaker so the dashboard can link to the live session.
