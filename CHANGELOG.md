@@ -25,3 +25,14 @@
   - 9a4806d Tighten the demo narration and the docs
   - 8e4c1a9 Polish dashboard readability, wording and edge states
 - rules/rules.lock: 6 rule files.
+
+## 2026-11-21 - Security hardening from the code review: Jev release gate, simulated clock token, read-only rules, idempotent bank payouts
+
+- Commits: d092178, ce3a7d8, 4ec6e37, 850d157, df8f4a4, 12a6c55.
+  - d092178 Re-check the reservation and its basis before acting on a Jev release
+  - ce3a7d8 Honour X-Sim-Time only with a valid X-Sim-Token
+  - 4ec6e37 Run rules read-only and refuse rule files that are not one SELECT
+  - 850d157 Make bank payouts idempotent, reconcile in-flight rows at start, record verdicts only on open incidents
+  - df8f4a4 Check the Host header, use per-run demo tokens, pass the incident to the PR watcher
+  - 12a6c55 Document the security hardening
+- rules/rules.lock: 6 rule files.
