@@ -25,6 +25,7 @@ from typing import Annotated, Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -63,6 +64,10 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="TrustGap", lifespan=lifespan)
+# Only these Host values, against DNS rebinding from a page in the stage browser.
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+                 if h.strip()]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 
 class Payout(BaseModel):

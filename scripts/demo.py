@@ -204,7 +204,8 @@ class Runner:
         self.watcher_log = open(LOG_DIR / "watch_pr.log", "w")
         env = dict(os.environ, BREAKER_URL=self.url, ADMIN_TOKEN=self.token)
         self.watcher = subprocess.Popen(
-            [PYTHON, str(watcher), "--since", since, "--timeout-min", "30"], cwd=ROOT, env=env,
+            [PYTHON, str(watcher), "--since", since, "--timeout-min", "30",
+             "--incident", inc["id"]], cwd=ROOT, env=env,
             stdout=self.watcher_log, stderr=subprocess.STDOUT, start_new_session=True)
         print(f"  (PR watcher started, pid {self.watcher.pid}, since {since},"
               f" log {LOG_DIR.relative_to(ROOT)}/watch_pr.log)")

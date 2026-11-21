@@ -6,7 +6,8 @@
 # not, else stub. Reseeds bank.db and breaker.db (BANK_DB, BREAKER_DB), starts the bank and
 # the breaker on the ports of BANK_URL and BREAKER_URL (default 8001 and 8000), refuses if
 # a port is busy, opens the dashboard, runs scripts/demo.py, and on exit stops exactly the
-# two services it started. It never prints secrets.
+# two services it started. It never prints secrets. ADMIN_TOKEN and SIM_TOKEN get random
+# values per run unless set; they are written to .state/demo/tokens.env (mode 600).
 set -u
 . "$(dirname "$0")/_python.sh"
 
@@ -61,6 +62,22 @@ done
 
 LOGS="$ROOT/.state/demo"
 mkdir -p "$LOGS" || exit 2
+
+# Per-run tokens: the development defaults are public. Generate random ones unless the
+# environment or .env set their own, export them to everything started below, and write
+# them to a file only the owner can read. The values are never printed.
+DEV_SIM_TOKEN="$("$PY" -c 'import sys; sys.path.insert(0, "scripts"); import common; print(common.DEV_SIM_TOKEN)')" || exit 2
+new_token() { "$PY" -c 'import secrets; print(secrets.token_urlsafe(24))'; }
+if [ -z "${ADMIN_TOKEN:-}" ] || [ "$ADMIN_TOKEN" = "dev-admin-token" ]; then
+    ADMIN_TOKEN="$(new_token)" || exit 2
+fi
+if [ -z "${SIM_TOKEN:-}" ] || [ "$SIM_TOKEN" = "$DEV_SIM_TOKEN" ]; then
+    SIM_TOKEN="$(new_token)" || exit 2
+fi
+export ADMIN_TOKEN SIM_TOKEN
+(umask 077; printf 'ADMIN_TOKEN=%q\nSIM_TOKEN=%q\n' "$ADMIN_TOKEN" "$SIM_TOKEN" >"$LOGS/tokens.env") || exit 2
+chmod 600 "$LOGS/tokens.env" || exit 2
+echo "tokens for this run: .state/demo/tokens.env (for apply_verdict.sh or watch_pr.sh in another terminal: set -a; . .state/demo/tokens.env; set +a)"
 BANK_PID=""
 BREAKER_PID=""
 stop_services() {

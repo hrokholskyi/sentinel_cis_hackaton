@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
 from scripts.common import DEV_SIM_TOKEN
@@ -23,6 +24,10 @@ DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
 SIM_TOKEN = os.environ.get("SIM_TOKEN") or DEV_SIM_TOKEN
 
 app = FastAPI(title="Toy bank")
+# Only these Host values, against DNS rebinding from a page in the stage browser.
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+                 if h.strip()]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 
 class Payout(BaseModel):
