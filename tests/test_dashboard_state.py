@@ -33,8 +33,8 @@ def test_dashboard_page_is_served(stack):
 def test_state_before_any_traffic(stack):
     s = stack.get("/state")
     assert s["bank_name"] == "ADCB"
-    assert s["client"]["name"] == "Al Noor Logistics LLC"
-    assert s["key"]["api_key_id"] == "key_alnoor_1" and s["key"]["state"] == "normal"
+    assert s["client"]["name"] == "Microsoft"
+    assert s["key"]["api_key_id"] == "key_microsoft_1" and s["key"]["state"] == "normal"
     assert s["clock"] is None and s["stream"] == [] and s["hold_queue"] == []
     assert s["incident"] is None
     assert s["counters"]["released_by_jev"]["median_latency_ms"] is None

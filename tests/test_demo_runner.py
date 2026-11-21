@@ -52,7 +52,7 @@ def test_demo_runner_auto_completes_all_cases(stack, tmp_path):
     captions = [p["caption"] for p in seen if p["caption"]]
     joined = "\n".join(captions)
     assert "in front of the ADCB payments API" in joined
-    assert "Here: Al Noor Logistics LLC's payout key." in joined
+    assert "Here: Microsoft's payout key." in joined
     assert "42 of 42 executed. Zero held." in joined
     assert "Both are above 0.90, so the breaker releases the payment." in joined
     assert "AED 423,000 stopped. AED 27,000 leaked." in joined
