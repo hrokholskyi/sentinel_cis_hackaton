@@ -121,7 +121,9 @@ def seed_bank(path: str) -> None:
 
     conn.executemany("INSERT INTO beneficiaries VALUES (?, ?, ?, ?, ?, ?)", bens)
     conn.executemany("INSERT INTO bases VALUES (?, ?, ?, ?, ?, ?, ?, ?)", bases)
-    conn.executemany("INSERT INTO payments VALUES (?, ?, ?, ?, ?, ?, ?, ?)", payments)
+    conn.executemany("INSERT INTO payments (id, account_id, beneficiary_id, api_key_id,"
+                     " amount_aed, purpose, basis_id, created_at)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", payments)
     conn.commit()
     conn.close()
 

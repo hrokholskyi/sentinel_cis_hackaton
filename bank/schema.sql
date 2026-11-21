@@ -47,7 +47,9 @@ CREATE TABLE payments (
     amount_aed     REAL NOT NULL,
     purpose        TEXT,
     basis_id       TEXT,
-    created_at     TEXT NOT NULL
+    created_at     TEXT NOT NULL,
+    -- Sent by the breaker (its reservation id); NULL for history rows.
+    idempotency_key TEXT UNIQUE
 );
 
 CREATE INDEX ix_payments_beneficiary ON payments (beneficiary_id, created_at);

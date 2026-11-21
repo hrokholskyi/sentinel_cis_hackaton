@@ -15,7 +15,9 @@ the rules and engine.probe_gate(); after PROBE_CLEAN_PAYMENTS clean ones it is n
 import hmac
 import os
 import sqlite3
+import sys
 import threading
+from contextlib import asynccontextmanager
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,7 +51,18 @@ RULE_CONFIG = {"soft_min_amount_aed": SOFT_MIN_AMOUNT_AED}
 
 RULES = engine.load_rules(RULES_DIR)
 
-app = FastAPI(title="TrustGap")
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    try:
+        reconcile_in_flight()
+    except sqlite3.Error as e:  # e.g. no databases yet; nothing is sent either way
+        print(f"warning: in-flight reconciliation skipped: {e}", file=sys.stderr)
+    yield
+
+
+app = FastAPI(title="TrustGap", lifespan=lifespan)
 
 
 class Payout(BaseModel):
@@ -118,12 +131,30 @@ def held(res_id: str, reason: str, rule_id: Optional[str], level: Optional[str],
 
 def forward(conn, res, secret: str, sim_time: Optional[str], now: str,
             decided_by: str) -> JSONResponse:
-    """Send a reservation to the bank and record the outcome. Call outside any transaction."""
+    """Send a reservation to the bank and record the outcome. Call outside any transaction.
+
+    The reservation id goes as Idempotency-Key. If the bank already has a payment with that
+    key (an earlier answer was lost), the reservation is marked executed and nothing is sent.
+    """
+    paid = conn.execute("SELECT * FROM bank.payments WHERE idempotency_key = ?",
+                        (res["id"],)).fetchone()
+    if paid is not None:
+        engine.set_status(conn, res["id"], "executed", now, decided_by, payment_id=paid["id"])
+        engine.add_event(conn, now, "bank", f"{res['id']} was already paid by the bank as"
+                                            f" {paid['id']}, not sent again")
+        balance = conn.execute("SELECT balance_aed FROM bank.accounts WHERE id = ?",
+                               (paid["account_id"],)).fetchone()
+        return JSONResponse({"status": "executed", "payment_id": paid["id"],
+                             "account_id": paid["account_id"],
+                             "beneficiary_id": paid["beneficiary_id"],
+                             "amount_aed": incidents.num(paid["amount_aed"]),
+                             "balance_aed": incidents.num(balance[0]) if balance else None,
+                             "created_at": paid["created_at"], "reservation_id": res["id"]})
     body = {"account_id": res["account_id"], "beneficiary_id": res["beneficiary_id"],
             "amount_aed": res["amount_aed"], "purpose": res["purpose"]}
     if res["basis_id"]:
         body["basis_id"] = res["basis_id"]
-    headers = {"X-API-Key": secret}
+    headers = {"X-API-Key": secret, "Idempotency-Key": res["id"]}
     if DEMO_MODE and sim_time:  # a time this breaker accepted or derived from accepted ones
         headers["X-Sim-Time"] = sim_time
         headers["X-Sim-Token"] = SIM_TOKEN
@@ -223,6 +254,34 @@ def _jev_warmup_failed(text: str) -> None:
 
 # Live and shadow mode: open the TLS connection to Jev at start, in the background.
 jev.start_warmup(_jev_warmup_failed)
+
+
+def reconcile_in_flight() -> None:
+    """At start: settle rows a crash left between the `pending`/`released` commit and the
+    bank's answer. Paid by the bank (same Idempotency-Key): executed. Otherwise held with
+    rule id restart_unclear, never sent again by itself."""
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute("SELECT * FROM reservations WHERE status IN ('pending', 'released')"
+                            " AND payment_id IS NULL ORDER BY created_at, id").fetchall()
+        for r in rows:
+            at = r["decided_at"] or r["created_at"]  # the request clock of that row
+            paid = conn.execute("SELECT id FROM bank.payments WHERE idempotency_key = ?",
+                                (r["id"],)).fetchone()
+            if paid:
+                engine.set_status(conn, r["id"], "executed", at, "restart", payment_id=paid["id"])
+                engine.add_event(conn, at, "restart", f"{r['id']} was {r['status']} at restart;"
+                                                      f" the bank paid it as {paid['id']}")
+            else:
+                engine.set_status(conn, r["id"], "held", at, "restart", rule_id="restart_unclear",
+                                  level="hard", detail=f"{r['status']} at breaker restart,"
+                                                       f" not paid by the bank")
+                engine.add_event(conn, at, "restart", f"{r['id']} was {r['status']} at restart"
+                                                      f" and not paid by the bank: held")
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
 
 
 @app.get("/health")
@@ -522,11 +581,14 @@ def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Depends
                 notes.append(("notify", f"bank security paged (simulated) for {incident_id}"))
 
             conn.execute("BEGIN IMMEDIATE")
-            incidents.record_verdict(conn, incident_id, requested=requested, verdict=final,
-                                     reason=body.reason, evidence=body.evidence.model_dump(),
-                                     pr_url=body.pr_url, now=now, status=status,
-                                     hold_until=hold_until)
-            if status == "closed":
+            recorded = incidents.record_verdict(
+                conn, incident_id, requested=requested, verdict=final, reason=body.reason,
+                evidence=body.evidence.model_dump(), pr_url=body.pr_url, now=now,
+                status=status, hold_until=hold_until)
+            if not recorded:
+                notes.append(("verdict", f"verdict for {incident_id} not recorded: the incident"
+                              f" was closed while it ran"))
+            elif status == "closed":
                 engine.set_key_state(conn, inc["api_key_id"], "normal", now, None)
                 notes.append(("admin", f"key {inc['api_key_id']} back to normal"))
             engine.add_event(conn, now, "verdict", f"verdict {requested} received for {incident_id}")

@@ -297,14 +297,17 @@ def request_clock(conn, inc) -> str:
 
 def record_verdict(conn, incident_id: str, *, requested: str, verdict: str, reason: str,
                    evidence: dict, pr_url: Optional[str], now: str, status: str,
-                   hold_until: Optional[str] = None) -> None:
-    conn.execute(
+                   hold_until: Optional[str] = None) -> bool:
+    """Record a verdict on an incident that is still open. False if it no longer is (for
+    example an admin resume closed it while a release ran): then nothing changes."""
+    cur = conn.execute(
         "UPDATE incidents SET verdict = ?, requested_verdict = ?, reason = ?, evidence_json = ?,"
         " pr_url = COALESCE(?, pr_url), verdict_at = ?, verdict_wall_at = ?, status = ?,"
-        " hold_until = COALESCE(?, hold_until) WHERE id = ?",
+        " hold_until = COALESCE(?, hold_until) WHERE id = ? AND status = 'open'",
         (verdict, requested, reason, json.dumps(evidence, sort_keys=True), pr_url, now,
          wall_now(), status, hold_until, incident_id),
     )
+    return cur.rowcount > 0
 
 
 def pause_to_pr_min(inc: dict) -> Optional[float]:

@@ -60,6 +60,16 @@ def num(x):
     return int(x) if float(x).is_integer() else x
 
 
+def executed(conn, payment) -> dict:
+    """The answer for a stored payment, the same shape as for a new one."""
+    balance = conn.execute("SELECT balance_aed FROM accounts WHERE id = ?",
+                           (payment["account_id"],)).fetchone()[0]
+    return {"status": "executed", "payment_id": payment["id"],
+            "account_id": payment["account_id"], "beneficiary_id": payment["beneficiary_id"],
+            "amount_aed": num(payment["amount_aed"]), "balance_aed": num(balance),
+            "created_at": payment["created_at"]}
+
+
 @app.get("/health")
 def health():
     conn = connect()
@@ -76,6 +86,7 @@ def payout(
     x_api_key: Optional[str] = Header(default=None),
     x_sim_time: Optional[str] = Header(default=None),
     x_sim_token: Optional[str] = Header(default=None),
+    idempotency_key: Optional[str] = Header(default=None),
 ):
     now = now_local(x_sim_time, x_sim_token)
     conn = connect()
@@ -87,6 +98,15 @@ def payout(
             ).fetchone()
             if key is None:
                 raise HTTPException(401, "invalid API key")
+            if idempotency_key:
+                stored = conn.execute("SELECT * FROM payments WHERE idempotency_key = ?",
+                                      (idempotency_key,)).fetchone()
+                if stored is not None:
+                    # Seen before: answer with the stored payment, never execute a second one.
+                    if stored["api_key_id"] != key["id"]:
+                        raise HTTPException(409, "Idempotency-Key already used")
+                    conn.execute("ROLLBACK")  # nothing was written
+                    return executed(conn, stored)
             acc = conn.execute(
                 "SELECT id, client_id, balance_aed FROM accounts WHERE id = ?", (body.account_id,)
             ).fetchone()
@@ -109,9 +129,10 @@ def payout(
             )
             conn.execute(
                 "INSERT INTO payments (id, account_id, beneficiary_id, api_key_id, amount_aed,"
-                " purpose, basis_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " purpose, basis_id, created_at, idempotency_key)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (payment_id, body.account_id, body.beneficiary_id, key["id"], body.amount_aed,
-                 body.purpose, body.basis_id, now),
+                 body.purpose, body.basis_id, now, idempotency_key or None),
             )
             if body.basis_id:
                 # Bookkeeping only: the bank does not check bases.
