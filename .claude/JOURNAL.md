@@ -236,3 +236,8 @@ The report has a section "Code paths that reach the bank payout (graphify graph.
 The watcher applied the verdict to the live breaker; the artifacts are backed up in `.state/pr.backup-rehearsal` and `.state/pr/rehearsal.json` for the stage fallback.
 The PR must stay open and unmerged: merging it would close the gap that case 3 of the demo shows.
 The dashboard's "pause to PR" shows 52 minutes for this run, because the stack was paused by the earlier failed rehearsal; the true Devin time is 9 min 25 s.
+
+## 2026-11-21 - Roman's decisions after the first Devin run
+Deck: the Devin slide keeps "About 10 min"; the measured "9 min 25 s" update is not published.
+Video and preview keep the simulated verdict "contact the client", although real Devin chose "escalate to bank security"; both are labelled as simulated and the README states the difference.
+The full video is published as GitHub release `demo-video-v1` (4K 74 MB, 1080p 27 MB); the release notes say it is rendered from the simulated preview.
