@@ -192,6 +192,7 @@ For the live setup (a TypeSafe key for Jev, a Devin webhook for layer 3), see th
 
 ## Docs
 
+- [`docs/RUNSHEET.md`](docs/RUNSHEET.md): the 5-minute stage run sheet, the keys, plan B and the pre-stage checklist.
 - [`docs/REFERENCE.md`](docs/REFERENCE.md): everything else: commands, endpoints, environment, choices, hardening and known limits.
 - [`SPEC.md`](SPEC.md): the build spec.
   It uses the working name Night Circuit Breaker.
