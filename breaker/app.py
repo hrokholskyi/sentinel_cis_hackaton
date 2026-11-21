@@ -122,35 +122,69 @@ def forward(conn, res, secret: str, sim_time: Optional[str], now: str,
     return JSONResponse(data, status_code=r.status_code)
 
 
+def release_gate(conn, res_id: str, violations: list[engine.Result]) -> Optional[str]:
+    """None if a Jev "release" answer may be acted on, else why the hold stays.
+
+    Call inside BEGIN IMMEDIATE, after Jev answered. The reservation must still be the soft
+    hold the rules made (not decided by an admin, a verdict or expiry, not attached to an
+    incident), the key must still be normal, no rule may have errored, and the payment must
+    carry an approved, unused basis of the same amount (incidents.recheck).
+    """
+    res = engine.get_reservation(conn, res_id)
+    if res["status"] != "held" or res["decided_by"] != "rules" or res["level"] != "soft":
+        return f"reservation is {res['status']} (decided by {res['decided_by']})"
+    if res["incident_id"]:
+        return f"it is attached to incident {res['incident_id']}"
+    ks = conn.execute("SELECT state FROM key_state WHERE api_key_id = ?",
+                      (res["api_key_id"],)).fetchone()
+    if ks is None or ks["state"] != "normal":
+        return f"key {res['api_key_id']} is {ks['state'] if ks else 'unknown'}"
+    broken = [v.rule_id for v in violations if v.error]
+    if broken:
+        return f"rule error in {', '.join(broken)}"
+    basis_id, why = incidents.recheck(conn, res, basis_required=True)
+    return None if basis_id else why
+
+
 def decide_soft(conn, res, violations: list[engine.Result], now: str) -> bool:
     """Decision for a payment with only soft violations: True releases it, False keeps the hold.
 
-    Layer 2 (Jev). Runs after the hold is committed, outside any transaction.
-    Any failure in Jev or in its logging keeps the hold (fail closed).
+    Layer 2 (Jev). Runs after the hold is committed: Jev is asked outside any transaction,
+    then one BEGIN IMMEDIATE transaction logs the call and, if Jev answered release and
+    release_gate() allows it, moves the reservation to `released`. Only then may the caller
+    forward it. Any failure in Jev or in its logging keeps the hold (fail closed).
     """
     try:
         trace: dict = {}
         result = jev.assess(jev.build_facts(conn, res, now), trace)
-        released = bool(result and result.released)
+        conn.execute("BEGIN IMMEDIATE")
+        why = release_gate(conn, res["id"], violations) if result and result.released else None
+        released = bool(result and result.released) and why is None
         conn.execute(
             "INSERT INTO jev_calls (reservation_id, request_json, response_json, latency_ms,"
             " released, mode) VALUES (?, ?, ?, ?, ?, ?)",
             (res["id"], trace.get("request_json"), trace.get("response_json"),
              trace.get("latency_ms"), int(released), trace.get("mode")))
-        if released:
-            engine.add_event(conn, now, "jev",
-                             f"Jev released {res['id']}: fits_history {result.fits_history:.2f}, "
-                             f"purpose_matches_basis {result.purpose_matches_basis:.2f}")
-        elif result is None:
+        if result is None:
             engine.add_event(conn, now, "jev",
                              f"Jev gave no answer for {res['id']} ({trace.get('mode')}), hold kept")
         else:
-            engine.add_event(conn, now, "jev",
-                             f"Jev kept hold {res['id']} ({result.mode}): fits_history "
-                             f"{result.fits_history:.2f}, purpose_matches_basis "
-                             f"{result.purpose_matches_basis:.2f}")
+            scores = (f"fits_history {result.fits_history:.2f}, purpose_matches_basis "
+                      f"{result.purpose_matches_basis:.2f}")
+            if released:
+                engine.set_status(conn, res["id"], "released", now, "jev")
+                engine.add_event(conn, now, "jev", f"Jev released {res['id']}: {scores}")
+            elif result.released:
+                engine.add_event(conn, now, "jev", f"Jev answered release for {res['id']}"
+                                                   f" ({scores}), hold kept: {why}")
+            else:
+                engine.add_event(conn, now, "jev",
+                                 f"Jev kept hold {res['id']} ({result.mode}): {scores}")
+        conn.execute("COMMIT")
         return released
     except Exception as e:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         engine.add_event(conn, now, "error", f"Jev step failed for {res['id']}: {e}")
         return False
 
@@ -261,7 +295,6 @@ def payout(
             return held(res_id, "hard_stop", chosen.rule_id, chosen.level, chosen.detail)
         if chosen:
             if decide_soft(conn, res, violations, now):
-                engine.set_status(conn, res_id, "released", now, "jev")
                 return forward(conn, engine.get_reservation(conn, res_id), x_api_key,
                                x_sim_time, now, "jev")
             engine.add_event(conn, now, "notify",

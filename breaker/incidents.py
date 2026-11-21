@@ -245,14 +245,18 @@ def held_payments(conn, incident_id: str) -> list:
                         " ORDER BY created_at, id", (incident_id,)).fetchall()
 
 
-def recheck(conn, res) -> tuple[Optional[str], str]:
-    """Re-check one held payment for a release verdict. Returns (basis_id or None, why).
+def recheck(conn, res, basis_required: bool = False) -> tuple[Optional[str], str]:
+    """Re-check one held payment for a release. Returns (basis_id or None, why).
 
+    Used by a release verdict and, with basis_required=True, by a Jev release.
     It passes only if the beneficiary has at least one bank payment before the reservation
     was created, and an approved, unused basis of the key's client exists for this
     beneficiary with exactly the same amount. If the reservation names a basis, it must be
-    that one. A basis carried by another payment in flight in the breaker does not count.
+    that one; with basis_required it must name one. A basis carried by another payment in
+    flight in the breaker, or already sent by it, does not count.
     """
+    if basis_required and not res["basis_id"]:
+        return None, "the payment names no basis"
     prior = conn.execute("SELECT COUNT(*) FROM bank.payments WHERE beneficiary_id = ?"
                          " AND created_at < ?",
                          (res["beneficiary_id"], res["created_at"])).fetchone()[0]
@@ -263,7 +267,7 @@ def recheck(conn, res) -> tuple[Optional[str], str]:
         " WHERE k.id = ? AND b.beneficiary_id = ? AND b.approved = 1 AND b.used = 0"
         " AND b.amount_aed = ? AND (? IS NULL OR b.id = ?)"
         " AND b.id NOT IN (SELECT basis_id FROM reservations WHERE basis_id IS NOT NULL"
-        "                  AND status IN ('pending', 'released') AND id != ?)"
+        "                  AND status IN ('pending', 'released', 'executed') AND id != ?)"
         " ORDER BY b.id LIMIT 1",
         (res["api_key_id"], res["beneficiary_id"], res["amount_aed"], res["basis_id"],
          res["basis_id"], res["id"]),

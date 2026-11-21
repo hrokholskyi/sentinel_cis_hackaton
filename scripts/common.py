@@ -23,6 +23,11 @@ API_KEY_SECRET = "demo_sk_microsoft_0f6b2c9e4d7a1358"  # synthetic, not a real c
 
 BREAKER_URL = os.environ.get("BREAKER_URL", "http://127.0.0.1:8000")
 
+# The simulated clock (X-Sim-Time) is honoured only with this token in X-Sim-Token.
+# The development default is public; scripts/demo.sh generates a random one per run.
+DEV_SIM_TOKEN = "dev-sim-token"
+SIM_TOKEN = os.environ.get("SIM_TOKEN") or DEV_SIM_TOKEN
+
 # Regular suppliers: (id, name, service, typical low, typical high, prior payment count).
 # The history of each one contains both its low and its high amount exactly.
 REGULARS = [

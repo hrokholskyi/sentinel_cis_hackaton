@@ -153,6 +153,7 @@ def _stub(facts: dict) -> dict:
     basis = facts.get("basis") or {}
     pay = facts.get("payment") or {}
     high = ((ben.get("prior_payments") or 0) > 0 and basis.get("approved") is True
+            and not basis.get("already_used")
             and basis.get("amount_aed") == pay.get("amount_aed"))
     score = 0.95 if high else 0.05
     return {"model": "stub", "answers": {k: {"type": "noul", "noul": score} for k in QUESTIONS}}

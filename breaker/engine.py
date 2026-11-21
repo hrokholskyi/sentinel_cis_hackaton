@@ -30,6 +30,7 @@ class Result:
     level: str
     violated: bool
     detail: str
+    error: bool = False  # the rule raised or returned a malformed row
 
 
 def load_rules(rules_dir: str) -> list[Rule]:
@@ -68,7 +69,7 @@ def evaluate(conn: sqlite3.Connection, rules: list[Rule], params: dict) -> list[
                 raise ValueError("violated is NULL")
             results.append(Result(rule.id, rule.level, bool(violated), str(detail)))
         except Exception as e:  # fail closed
-            results.append(Result(rule.id, rule.level, True, f"rule error: {e}"))
+            results.append(Result(rule.id, rule.level, True, f"rule error: {e}", error=True))
     return results
 
 
