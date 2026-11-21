@@ -23,7 +23,7 @@ def _num(x):
 # --- counters -------------------------------------------------------------------
 
 def stopped(conn) -> dict:
-    """Payments on hold now: count and AED sum."""
+    """Payments on hold now: count and AED sum. An expired hold is rejected, so not stopped."""
     r = conn.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_aed), 0) s FROM reservations"
                      " WHERE status = 'held'").fetchone()
     return {"count": r["n"], "aed": _num(r["s"])}
@@ -33,14 +33,24 @@ def leaked(conn) -> dict:
     """Executed payments of a tripped key in the hour up to its incident's tripped_at.
 
     Payments sent later by a verdict or an admin are explicit decisions, not leaks.
+    An incident closed by a full `release` verdict was legitimate traffic (the payroll
+    burst), so the payments before it are not leaks either.
     EXISTS counts a payment once even if two incidents cover it.
     """
     r = conn.execute(
         "SELECT COUNT(*) n, COALESCE(SUM(r.amount_aed), 0) s FROM reservations r"
         " WHERE r.status = 'executed' AND COALESCE(r.decided_by, '') NOT IN ('verdict', 'admin')"
         " AND EXISTS (SELECT 1 FROM incidents i WHERE i.api_key_id = r.api_key_id"
+        "             AND NOT (i.status = 'closed' AND COALESCE(i.verdict, '') = 'release')"
         "             AND r.created_at >= datetime(i.tripped_at, '-1 hour')"
         "             AND r.created_at <= i.tripped_at)").fetchone()
+    return {"count": r["n"], "aed": _num(r["s"])}
+
+
+def expired(conn) -> dict:
+    """Holds rejected because their time limit passed (decided_by = expiry): never sent."""
+    r = conn.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_aed), 0) s FROM reservations"
+                     " WHERE status = 'rejected' AND decided_by = 'expiry'").fetchone()
     return {"count": r["n"], "aed": _num(r["s"])}
 
 
@@ -114,6 +124,8 @@ def layer1(conn, rules_loaded: int) -> dict:
         r = rows[0]
         if r["rule_id"] == "key_paused":
             out["result"] = "paused"
+        elif r["rule_id"] == "probe":
+            out["result"] = "probe"
         elif r["level"] in ("soft", "hard"):
             out["result"] = r["level"]
         else:
@@ -164,8 +176,11 @@ def incident_card(conn, inc: Optional[dict]) -> Optional[dict]:
         return None
     held = conn.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_aed), 0) s FROM reservations"
                         " WHERE incident_id = ? AND status = 'held'", (inc["id"],)).fetchone()
+    gone = conn.execute("SELECT COUNT(*) FROM reservations WHERE incident_id = ?"
+                        " AND status = 'rejected' AND decided_by = 'expiry'",
+                        (inc["id"],)).fetchone()[0]
     return {"id": inc["id"], "api_key_id": inc["api_key_id"], "rule_id": inc["rule_id"],
-            "tripped_at": inc["tripped_at"], "tripped_wall_at": inc["tripped_wall_at"],
+            "expired_count": gone, "tripped_at": inc["tripped_at"], "tripped_wall_at": inc["tripped_wall_at"],
             "first_violation_at": inc["first_violation_at"],
             "violation_to_pause_ms": inc["violation_to_pause_ms"], "status": inc["status"],
             "verdict": inc["verdict"], "requested_verdict": inc["requested_verdict"],
@@ -208,7 +223,8 @@ def presenter_clear() -> dict:
 
 # --- everything ---------------------------------------------------------------
 
-def build(conn, *, incs: list[dict], keys: list[dict], rules_loaded: int) -> dict:
+def build(conn, *, incs: list[dict], keys: list[dict], rules_loaded: int,
+          probe_target: Optional[int] = None) -> dict:
     """The dashboard fields added to GET /state."""
     key = conn.execute(
         "SELECT k.id, k.client_id, c.name FROM bank.api_keys k"
@@ -223,12 +239,15 @@ def build(conn, *, incs: list[dict], keys: list[dict], rules_loaded: int) -> dic
         "client": {"id": key["client_id"], "name": key["name"]} if key else None,
         "key": {"api_key_id": key_id, "state": ks["state"] if ks else "normal",
                 "since": ks["since"] if ks else None,
-                "incident_id": ks["incident_id"] if ks else None},
+                "incident_id": ks["incident_id"] if ks else None,
+                "probe_clean": ks.get("probe_clean", 0) if ks else 0,
+                "probe_target": probe_target},
         "clock": last["created_at"] if last else None,
         "jev_mode": jev.JEV_MODE,
         "counters": {
             "stopped": stopped(conn),
             "leaked": leaked(conn),
+            "expired": expired(conn),
             "legit_held": legit_held(conn),
             "released_by_jev": released_by_jev(conn),
             "violation_to_pause_ms": inc["violation_to_pause_ms"] if inc else None,

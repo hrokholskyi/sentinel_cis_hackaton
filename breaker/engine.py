@@ -120,13 +120,116 @@ def key_state(conn, api_key_id: str, now: str) -> sqlite3.Row:
 
 
 def set_key_state(conn, api_key_id: str, state: str, now: str, incident_id: Optional[str]) -> None:
+    """Set the state of a key. Every change resets the probe counter."""
     conn.execute(
-        "INSERT INTO key_state (api_key_id, state, since, incident_id) VALUES (?, ?, ?, ?)"
+        "INSERT INTO key_state (api_key_id, state, since, incident_id, probe_clean)"
+        " VALUES (?, ?, ?, ?, 0)"
         " ON CONFLICT(api_key_id) DO UPDATE SET state = excluded.state, since = excluded.since,"
-        " incident_id = excluded.incident_id",
+        " incident_id = excluded.incident_id, probe_clean = 0",
         (api_key_id, state, now, incident_id),
     )
 
 
 def add_event(conn, at: str, kind: str, text: str) -> None:
     conn.execute("INSERT INTO events (at, kind, text) VALUES (?, ?, ?)", (at, kind, text))
+
+
+# --- hold expiry and probe (milestone 6) --------------------------------------
+
+def _reject_expired(conn, rows, now: str, why: str) -> list[str]:
+    ids = []
+    for r in rows:
+        set_status(conn, r["id"], "rejected", now, "expiry")
+        add_event(conn, now, "expiry",
+                  f"hold {r['id']} expired ({why}): AED {_num(r['amount_aed'])} to "
+                  f"{r['beneficiary_id']} rejected, never sent")
+        ids.append(r["id"])
+    return ids
+
+
+def _num(x):
+    return int(x) if float(x).is_integer() else x
+
+
+def expire_holds(conn, api_key_id: str, now: str, ttl_min: int) -> dict:
+    """Lazy hold expiry on the request clock. Call inside BEGIN IMMEDIATE.
+
+    It runs only when a payout, a verdict or an admin call for this key is processed, with
+    that request's "now". Nothing runs on a timer or on wall-clock time.
+
+    - Holds of the key's open incident share one deadline: the latest of them plus
+      ttl_min, or the incident's hold_until if that is later. So every hold is older than
+      ttl_min when it expires, and a key that keeps sending requests while paused stays
+      paused. When the deadline has passed, all of them are rejected, the incident gets
+      status `expired`, and a paused key moves to `probe`.
+    - Any other hold of the key (a soft stop with no incident, a probe hold) expires on
+      its own, ttl_min after it was created. The key state does not change.
+
+    A deadline passes only when `now` is strictly later, so a clock that goes back
+    expires nothing. Returns {"rejected": [...], "incidents": [...], "probe": bool}.
+    """
+    ttl = f"+{int(ttl_min)} minutes"
+    out = {"rejected": [], "incidents": [], "probe": False}
+    for inc in conn.execute("SELECT id, hold_until FROM incidents WHERE api_key_id = ?"
+                            " AND status = 'open' ORDER BY id", (api_key_id,)).fetchall():
+        latest = conn.execute("SELECT datetime(MAX(created_at), ?) FROM reservations"
+                              " WHERE incident_id = ? AND status = 'held'",
+                              (ttl, inc["id"])).fetchone()[0]
+        if latest is None:
+            continue
+        deadline = max(latest, inc["hold_until"] or "")
+        if not now > deadline:
+            continue
+        rows = conn.execute("SELECT * FROM reservations WHERE incident_id = ? AND status = 'held'"
+                            " ORDER BY created_at, id", (inc["id"],)).fetchall()
+        out["rejected"] += _reject_expired(conn, rows, now, f"{inc['id']}, limit {deadline}")
+        conn.execute("UPDATE incidents SET status = 'expired' WHERE id = ?", (inc["id"],))
+        add_event(conn, now, "expiry", f"incident {inc['id']} expired at {deadline}: "
+                                       f"{len(rows)} held payments rejected, never sent")
+        out["incidents"].append(inc["id"])
+    rows = conn.execute(
+        "SELECT * FROM reservations r WHERE r.api_key_id = ? AND r.status = 'held'"
+        " AND datetime(r.created_at, ?) < ?"
+        " AND NOT EXISTS (SELECT 1 FROM incidents i WHERE i.id = r.incident_id"
+        "                 AND i.status = 'open')"
+        " ORDER BY r.created_at, r.id", (api_key_id, ttl, now)).fetchall()
+    out["rejected"] += _reject_expired(conn, rows, now, f"limit {ttl_min} min")
+    ks = conn.execute("SELECT * FROM key_state WHERE api_key_id = ?", (api_key_id,)).fetchone()
+    if ks is not None and ks["state"] == "paused" and ks["incident_id"] in out["incidents"]:
+        set_key_state(conn, api_key_id, "probe", now, ks["incident_id"])
+        add_event(conn, now, "probe", f"key {api_key_id} moved to probe after {ks['incident_id']}"
+                                      f" expired")
+        out["probe"] = True
+    return out
+
+
+def probe_gate(conn, beneficiary_id: str, amount_aed: float, now: str,
+               max_amount_aed: float) -> Optional[str]:
+    """None if a payment may pass a key in probe, else why it is held."""
+    prior = conn.execute("SELECT COUNT(*) FROM bank.payments WHERE beneficiary_id = ?"
+                         " AND created_at < ?", (beneficiary_id, now)).fetchone()[0]
+    if prior == 0:
+        return "probe: beneficiary has no prior payments"
+    if amount_aed > max_amount_aed:
+        return f"probe: amount {_num(amount_aed)} above {_num(max_amount_aed)}"
+    return None
+
+
+def count_probe_clean(conn, api_key_id: str, since: str, now: str, target: int) -> bool:
+    """Count one clean payment of a key in probe. Call inside BEGIN IMMEDIATE.
+
+    `since` is the probe start seen by the request, so a payment from an earlier probe
+    period never counts in a later one. Returns True if the key went back to normal.
+    """
+    cur = conn.execute("UPDATE key_state SET probe_clean = probe_clean + 1 WHERE api_key_id = ?"
+                       " AND state = 'probe' AND since = ?", (api_key_id, since))
+    if cur.rowcount == 0:
+        return False
+    n = conn.execute("SELECT probe_clean FROM key_state WHERE api_key_id = ?",
+                     (api_key_id,)).fetchone()[0]
+    if n < target:
+        return False
+    set_key_state(conn, api_key_id, "normal", now, None)
+    add_event(conn, now, "probe", f"key {api_key_id} back to normal after {n} clean payments"
+                                  f" in probe")
+    return True

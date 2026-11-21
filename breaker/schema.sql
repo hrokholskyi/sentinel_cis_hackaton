@@ -28,7 +28,9 @@ CREATE TABLE key_state (
     api_key_id  TEXT PRIMARY KEY,
     state       TEXT NOT NULL CHECK (state IN ('normal', 'paused', 'probe')),
     since       TEXT NOT NULL,
-    incident_id TEXT
+    incident_id TEXT,
+    -- Clean payments since the key entered probe; reset on every state change.
+    probe_clean INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE incidents (

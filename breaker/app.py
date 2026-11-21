@@ -6,6 +6,10 @@ Pipeline for one payout (SPEC section 6):
    reservation as pending, evaluate all rules (counters include this payment), and mark it
    held on any violation. A hard violation pauses the key and opens an incident.
 3. No violation: forward to the bank. Only soft violations: decide_soft() picks release or hold.
+
+Milestone 6: every payout, verdict and admin call first runs the lazy hold expiry of its key
+(engine.expire_holds) on the request clock. A key in probe passes only payments that pass
+the rules and engine.probe_gate(); after PROBE_CLEAN_PAYMENTS clean ones it is normal again.
 """
 
 import hmac
@@ -34,7 +38,9 @@ INCIDENTS_DIR = os.environ.get("INCIDENTS_DIR", "fixtures/incidents")
 DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "dev-admin-token")
 SOFT_MIN_AMOUNT_AED = float(os.environ.get("SOFT_MIN_AMOUNT_AED", "5000"))
-HOLD_TTL_MIN = int(os.environ.get("HOLD_TTL_MIN", "30"))  # used from milestone 6
+HOLD_TTL_MIN = int(os.environ.get("HOLD_TTL_MIN", "30"))
+PROBE_MAX_AMOUNT_AED = float(os.environ.get("PROBE_MAX_AMOUNT_AED", "1000"))
+PROBE_CLEAN_PAYMENTS = int(os.environ.get("PROBE_CLEAN_PAYMENTS", "5"))
 
 # Config values bound as extra named params, so thresholds stay in config.
 RULE_CONFIG = {"soft_min_amount_aed": SOFT_MIN_AMOUNT_AED}
@@ -192,6 +198,7 @@ def payout(
         tripped = None  # incident created by this request, for the webhook after commit
         conn.execute("BEGIN IMMEDIATE")
         try:
+            engine.expire_holds(conn, key_id, now, HOLD_TTL_MIN)
             state = engine.key_state(conn, key_id, now)
             if state["state"] == "paused":
                 res_id = engine.insert_reservation(
@@ -211,7 +218,19 @@ def payout(
                       "now": now, "basis_id": req["basis_id"], **RULE_CONFIG}
             violations = [r for r in engine.evaluate(conn, RULES, params) if r.violated]
             chosen = engine.pick(violations)
+            probe_since = state["since"] if state["state"] == "probe" else None
+            probe_why = None
+            if probe_since is not None and not (chosen and chosen.level == "hard"):
+                probe_why = engine.probe_gate(conn, req["beneficiary_id"], req["amount_aed"], now,
+                                              PROBE_MAX_AMOUNT_AED)
             inc = incidents.open_incident(conn, key_id)
+            if probe_why:
+                engine.set_status(conn, res_id, "held", now, "probe", rule_id="probe",
+                                  level="hard", detail=probe_why)
+                if inc:
+                    incidents.append(conn, inc, engine.get_reservation(conn, res_id), now)
+                conn.execute("COMMIT")
+                return held(res_id, "probe", "probe", "hard", probe_why)
             if chosen:
                 engine.set_status(conn, res_id, "held", now, "rules", rule_id=chosen.rule_id,
                                   level=chosen.level, detail=chosen.detail)
@@ -249,7 +268,15 @@ def payout(
                              f"client asked to confirm payment {res_id}: AED "
                              f"{incidents.num(res['amount_aed'])} to {res['beneficiary_id']}")
             return held(res_id, "soft_stop", chosen.rule_id, chosen.level, chosen.detail)
-        return forward(conn, res, x_api_key, x_sim_time, now, "breaker")
+        if probe_since is None:
+            return forward(conn, res, x_api_key, x_sim_time, now, "breaker")
+        # Key in probe: a payment with no violation that the bank executes is a clean one.
+        resp = forward(conn, res, x_api_key, x_sim_time, now, "probe")
+        if engine.get_reservation(conn, res_id)["status"] == "executed":
+            conn.execute("BEGIN IMMEDIATE")
+            engine.count_probe_clean(conn, key_id, probe_since, now, PROBE_CLEAN_PAYMENTS)
+            conn.execute("COMMIT")
+        return resp
     finally:
         conn.close()
 
@@ -265,6 +292,7 @@ def resume_key(key_id: str, x_sim_time: Optional[str] = Header(default=None)):
         if conn.execute("SELECT 1 FROM key_state WHERE api_key_id = ?", (key_id,)).fetchone() is None:
             conn.execute("ROLLBACK")
             raise HTTPException(404, "unknown key")
+        expire_for_key(conn, key_id, x_sim_time)  # an expired incident stays expired
         conn.execute("UPDATE incidents SET status = 'closed' WHERE api_key_id = ? AND status = 'open'",
                      (key_id,))
         engine.set_key_state(conn, key_id, "normal", now, None)
@@ -275,12 +303,34 @@ def resume_key(key_id: str, x_sim_time: Optional[str] = Header(default=None)):
         conn.close()
 
 
-def _take_hold(conn, res_id: str, new_status: str, now: str):
-    """Move a held reservation to new_status atomically; 404/409 otherwise."""
+def request_clock(conn, key_id: str, sim_time: Optional[str]) -> Optional[str]:
+    """'Now' for hold expiry on an admin call: X-Sim-Time if sent, else the latest request
+    time of the key (never the wall clock, which is far from the demo clock)."""
+    if sim_time:
+        return now_local(sim_time)
+    return conn.execute("SELECT MAX(created_at) FROM reservations WHERE api_key_id = ?",
+                        (key_id,)).fetchone()[0]
+
+
+def expire_for_key(conn, key_id: str, sim_time: Optional[str]) -> None:
+    """Run the lazy hold expiry of one key inside the caller's BEGIN IMMEDIATE."""
+    now = request_clock(conn, key_id, sim_time)
+    if now:
+        engine.expire_holds(conn, key_id, now, HOLD_TTL_MIN)
+
+
+def _take_hold(conn, res_id: str, new_status: str, now: str, sim_time: Optional[str]):
+    """Move a held reservation to new_status atomically; 404/409 otherwise.
+
+    The key's hold expiry runs first, so an expired hold answers 409 (it is rejected).
+    """
     conn.execute("BEGIN IMMEDIATE")
     res = engine.get_reservation(conn, res_id)
+    if res is not None and res["status"] == "held":
+        expire_for_key(conn, res["api_key_id"], sim_time)
+        res = engine.get_reservation(conn, res_id)
     if res is None or res["status"] != "held":
-        conn.execute("ROLLBACK")
+        conn.execute("COMMIT")  # keeps an expiry that just ran; nothing else was written
         if res is None:
             raise HTTPException(404, "unknown reservation")
         raise HTTPException(409, f"reservation is {res['status']}, not held")
@@ -295,7 +345,7 @@ def release_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
     now = now_local(x_sim_time)
     conn = connect()
     try:
-        res = _take_hold(conn, res_id, "released", now)
+        res = _take_hold(conn, res_id, "released", now, x_sim_time)
         secret = conn.execute("SELECT secret FROM bank.api_keys WHERE id = ?",
                               (res["api_key_id"],)).fetchone()
         if secret is None:
@@ -311,7 +361,7 @@ def reject_hold(res_id: str, x_sim_time: Optional[str] = Header(default=None)):
     now = now_local(x_sim_time)
     conn = connect()
     try:
-        res = _take_hold(conn, res_id, "rejected", now)
+        res = _take_hold(conn, res_id, "rejected", now, x_sim_time)
         return {"reservation_id": res_id, "status": res["status"]}
     finally:
         conn.close()
@@ -378,9 +428,18 @@ def verdict(incident_id: str, body: Verdict, x_sim_time: Optional[str] = Header(
             inc = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
             if inc is None:
                 raise HTTPException(404, "unknown incident")
+            now = now_local(x_sim_time) if x_sim_time else incidents.request_clock(conn, inc)
+            if inc["status"] == "open":  # lazy hold expiry of the key, on the verdict's clock
+                conn.execute("BEGIN IMMEDIATE")
+                engine.expire_holds(conn, inc["api_key_id"], now, HOLD_TTL_MIN)
+                conn.execute("COMMIT")
+                inc = conn.execute("SELECT * FROM incidents WHERE id = ?",
+                                   (incident_id,)).fetchone()
+            if inc["status"] == "expired":
+                raise HTTPException(409, "incident is expired: its holds were rejected when the"
+                                         " hold limit passed, nothing left to decide")
             if inc["status"] != "open":
                 raise HTTPException(409, f"incident is {inc['status']}")
-            now = now_local(x_sim_time) if x_sim_time else incidents.request_clock(conn, inc)
             requested, final, status, hold_until = body.verdict, body.verdict, "open", None
             released, kept = [], []
             notes = []
@@ -448,7 +507,8 @@ def state():
         events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 10")]
         out = {"keys": keys, "reservations": counts, "reservations_aed": amounts,
                "open_incident": open_inc, "incidents": incs, "events": events}
-        out.update(dashboard.build(conn, incs=incs, keys=keys, rules_loaded=len(RULES)))
+        out.update(dashboard.build(conn, incs=incs, keys=keys, rules_loaded=len(RULES),
+                                   probe_target=PROBE_CLEAN_PAYMENTS))
         return out
     finally:
         conn.close()
