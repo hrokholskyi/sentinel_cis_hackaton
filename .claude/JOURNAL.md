@@ -85,3 +85,9 @@ The browser preview stays in the temp folder, not in the repo.
 Roman asked for the bank to be shown as ADCB and the client as Microsoft, which overrides the SPEC rule "no real banks, names".
 Applied to the preview page only for now, text only, no logos, with a "fictional scenario" tag.
 Open: whether the seed data and the real dashboard get the same names.
+
+## 2026-11-21 - Real dashboard gets real names and a guided demo runner
+Roman chose: the real dashboard shows ADCB and Microsoft and has the same subtitles and spotlight as the preview.
+A one-command demo runner drives it: it pushes the caption and spotlight to the breaker, runs the real traffic scripts, and waits for Enter between beats.
+This goes beyond SPEC sections 11 and 13 (no subtitles, fictional client) by Roman's decision.
+The client rename (name and ids, with regenerated fixtures) runs as its own task after M4 and the Jev tuning are merged, because both touch the seed files.
